@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  # Servicio principal de la aplicación
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ayllu_app
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    command: python bot/main.py
+
+
+  
