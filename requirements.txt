@@ -1,0 +1,6 @@
+openai
+litellm
+langgraph
+python-telegram-bot
+psycopg2-binary
+python-dotenv

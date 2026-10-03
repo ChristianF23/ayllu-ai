@@ -1,0 +1,15 @@
+# Entorno virtual de Python
+venv/
+.venv/
+env/
+
+# Variables de entorno y credenciales sensibles
+.env
+
+# Archivos de caché de Python y Docker
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Datos persistentes de PostgreSQL local
+postgres_data/
