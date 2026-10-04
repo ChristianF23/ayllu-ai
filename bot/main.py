@@ -19,8 +19,13 @@ async def post_init(application):
     """
     Hook de inicio de python-telegram-bot: inicializa el pool de PostgreSQL.
     """
+    from utils.okf_reader import okf_reader
+
     logger.info("Inicializando conexión con PostgreSQL...")
     await init_db_pool()
+
+    # Carga de conceptos OKF
+    okf_reader.load_bundle()
 
 async def post_shutdown(application):
     """
@@ -65,7 +70,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.chat.send_action(action="typing")
 
     # Invocar al Orquestador
-    result = orchestrator.process_request(user_prompt=user_text)
+    result = await orchestrator.process_request(user_prompt=user_text)
 
     if result["status"] == "success":
         response_text = result["response"]

@@ -4,3 +4,4 @@ langgraph
 python-telegram-bot
 asyncpg
 python-dotenv
+pyyaml
