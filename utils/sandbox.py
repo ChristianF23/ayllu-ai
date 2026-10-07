@@ -2,6 +2,7 @@ import os
 import sys
 import sysconfig
 import tempfile
+import re
 import subprocess
 import logging
 from typing import Dict, Any, Optional
@@ -24,6 +25,14 @@ def _hook(event, args):
             raise PermissionError("Sandbox: acceso a archivos fuera del directorio aislado: " + path)
 sys.addaudithook(_hook)
 """
+
+# Líneas que el guardia añade antes del código del agente (guardia + salto de unión).
+_GUARD_OFFSET = _GUARD.count("\n") + 1
+_TRACEBACK_LINE = re.compile(r'(File "<string>", line )(\d+)')
+
+def _fix_traceback_lines(stderr: str) -> str:
+    """Resta el desfase del guardia para que los tracebacks apunten a las líneas del código del agente."""
+    return _TRACEBACK_LINE.sub(lambda m: f"{m.group(1)}{max(int(m.group(2)) - _GUARD_OFFSET, 1)}", stderr)
 
 class PythonSandbox:
     """
@@ -77,7 +86,7 @@ class PythonSandbox:
                 "status": "success" if process.returncode == 0 else "error",
                 "exit_code": process.returncode,
                 "stdout": stdout.strip(),
-                "stderr": stderr.strip()
+                "stderr": _fix_traceback_lines(stderr.strip())
             }
 
         except subprocess.TimeoutExpired:
