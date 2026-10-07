@@ -1,9 +1,29 @@
+import os
 import sys
+import sysconfig
+import tempfile
 import subprocess
 import logging
 from typing import Dict, Any, Optional
 
 logger = logging.getLogger("AylluSandbox")
+
+# Guardia que se ejecuta DENTRO del subproceso antes del código del agente:
+# bloquea abrir archivos fuera del directorio de trabajo temporal y de la librería de Python.
+_GUARD = """
+import sys, os
+_allowed = [os.path.realpath(p) for p in sys.argv[1:] if p]
+sys.argv = sys.argv[:1]
+def _hook(event, args):
+    if event == "open" and isinstance(args[0], (str, bytes, os.PathLike)):
+        path = os.fsdecode(args[0])
+        if path.isdigit():
+            return
+        real = os.path.realpath(path)
+        if not any(real == a or real.startswith(a + os.sep) for a in _allowed):
+            raise PermissionError("Sandbox: acceso a archivos fuera del directorio aislado: " + path)
+sys.addaudithook(_hook)
+"""
 
 class PythonSandbox:
     """
@@ -14,6 +34,10 @@ class PythonSandbox:
     - Timeout estricto de 10 segundos.
     - Captura de stdout, stderr y código de salida.
     - Entorno limpio (cero herencia de secretos .env).
+    - Directorio de trabajo temporal vacío, Python en modo aislado (-I) y un
+      guardia que bloquea abrir archivos fuera de ese directorio.
+    Nota: es una defensa en profundidad, no una frontera de seguridad total.
+    La frontera real es ejecutar el sandbox en un contenedor sin el volumen del proyecto.
     """
     def __init__(self, timeout_seconds: int = 10):
         self.timeout_seconds = timeout_seconds
@@ -23,13 +47,28 @@ class PythonSandbox:
         Ejecuta un bloque de código Python aislado en un subproceso estricto.
         """
         try:
-            # Ejecución en subproceso sin pasar las variables de entorno sensibles
+            with tempfile.TemporaryDirectory(prefix="ayllu_sandbox_") as work_dir:
+                return self._run(code_string, work_dir)
+        except Exception as e:
+            logger.error(f"❌ Error interno en Sandbox: {str(e)}")
+            return {
+                "status": "exception",
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": f"SandboxInternalError: {str(e)}"
+            }
+
+    def _run(self, code_string: str, work_dir: str) -> Dict[str, Any]:
+        allowed = [work_dir, sysconfig.get_paths()["stdlib"], sys.prefix, sys.base_prefix]
+        guarded_code = _GUARD + "\n" + code_string
+        try:
             process = subprocess.Popen(
-                [sys.executable, "-c", code_string],
+                [sys.executable, "-I", "-c", guarded_code, *allowed],
+                cwd=work_dir,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                env={"PYTHONUNBUFFERED": "1"}  # Entorno sanitizado sin .env
+                env={"PYTHONUNBUFFERED": "1", "SYSTEMROOT": os.environ.get("SYSTEMROOT", "")}
             )
 
             stdout, stderr = process.communicate(timeout=self.timeout_seconds)
@@ -49,14 +88,6 @@ class PythonSandbox:
                 "exit_code": -1,
                 "stdout": "",
                 "stderr": f"ExecutionTimeoutError: El script superó el tiempo máximo permitido ({self.timeout_seconds} segundos)."
-            }
-        except Exception as e:
-            logger.error(f"❌ Error interno en Sandbox: {str(e)}")
-            return {
-                "status": "exception",
-                "exit_code": -1,
-                "stdout": "",
-                "stderr": f"SandboxInternalError: {str(e)}"
             }
 
 sandbox = PythonSandbox(timeout_seconds=10)
