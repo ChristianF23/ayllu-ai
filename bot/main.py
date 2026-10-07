@@ -2,6 +2,7 @@ import os
 import logging
 from dotenv import load_dotenv
 from telegram import Update
+from telegram.error import BadRequest
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from agents.orchestrator import orchestrator
 from utils.database import init_db_pool, close_db_pool, is_user_allowed
@@ -14,6 +15,17 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger("AylluBot")
+
+async def reply_safe(message, text: str):
+    """
+    Responde con Markdown; si Telegram lo rechaza (entidades mal formadas),
+    reintenta en texto plano para no perder el mensaje.
+    """
+    try:
+        await message.reply_text(text, parse_mode="Markdown")
+    except BadRequest as e:
+        logger.warning(f"⚠️ Telegram rechazó el Markdown ({e}); reenviando como texto plano.")
+        await message.reply_text(text)
 
 async def post_init(application):
     """
@@ -77,7 +89,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tokens_prompt = result["usage"]["prompt_tokens"]
         tokens_completion = result["usage"]["completion_tokens"]
         tokens_total = result["usage"]["total_tokens"]
-        cost = result["usage"]["estimated_cost_usd"]
+        cost = result["usage"]["estimated_cost_usd"] or 0.0
         model_used = result["model_used"]
 
         # Registramos la métrica de consumo en PostgreSQL
@@ -95,7 +107,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"───────────────\n"
             f"📊 *Modelo:* `{model_used}` | *Tokens:* `{tokens_total}` | *Costo est.:* `${cost:.6f}`"
         )
-        await update.message.reply_text(reply_message, parse_mode="Markdown")
+        await reply_safe(update.message, reply_message)
     else:
         error_msg = f"❌ Ocurrió un error al procesar tu mensaje: {result['message']}"
         await update.message.reply_text(error_msg)

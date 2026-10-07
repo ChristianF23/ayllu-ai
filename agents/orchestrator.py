@@ -1,6 +1,6 @@
 import os
 import logging
-from litellm import completion
+from litellm import acompletion
 from utils.okf_reader import okf_reader
 from utils.sandbox import sandbox
 from runbooks.db_inspector import runbook_inspect_table_count
@@ -50,7 +50,7 @@ class OrchestratorAgent:
                 )
 
                 try:
-                    response = completion(
+                    response = await acompletion(
                         model=self.default_model,
                         fallbacks=[self.fallback_model],
                         messages=[
@@ -132,7 +132,7 @@ class OrchestratorAgent:
         )
 
         try:
-            response = completion(
+            response = await acompletion(
                 model=target_model,
                 fallbacks=[self.fallback_model],  # Fallback a gpt-4o si falla el modelo primario
                 messages=[
@@ -142,17 +142,18 @@ class OrchestratorAgent:
             )
 
             reply_text = response.choices[0].message.content
-            usage = response.get("usage", {})
+            usage = response.get("usage") or {}
+            cost = (getattr(response, "_hidden_params", None) or {}).get("response_cost") or 0.0
 
             return {
                 "status": "success",
                 "response": reply_text,
                 "model_used": response.get("model", target_model),
                 "usage": {
-                    "prompt_tokens": usage.get("prompt_tokens", 0),
-                    "completion_tokens": usage.get("completion_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                    "estimated_cost_usd": getattr(response, "_hidden_params", {}).get("response_cost", 0.0)
+                    "prompt_tokens": usage.get("prompt_tokens") or 0,
+                    "completion_tokens": usage.get("completion_tokens") or 0,
+                    "total_tokens": usage.get("total_tokens") or 0,
+                    "estimated_cost_usd": cost
                 }
             }
 
