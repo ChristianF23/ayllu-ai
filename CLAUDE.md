@@ -6,11 +6,13 @@ Bot de Telegram que enruta mensajes a un agente orquestador (LiteLLM, `gpt-4o-mi
 
 - `bot/main.py`: entrada de Telegram. Valida la lista blanca, llama al orquestador y registra el costo.
 - `agents/orchestrator.py`: elige una ruta por palabras clave (runbook, sandbox con self-healing, chat LLM con contexto OKF).
-- `utils/sandbox.py`: ejecuta Python en un subproceso con timeout, en un directorio temporal vacío, con `-I` y un guardia (audit hook) que bloquea abrir archivos fuera de ese directorio. Es defensa en profundidad; la frontera real sería un contenedor aparte sin el volumen del proyecto (pendiente).
+- `utils/sandbox.py`: motor que ejecuta Python en un subproceso con timeout, en un directorio temporal vacío, con `-I` y un guardia (audit hook) que bloquea abrir archivos fuera de ese directorio. Los tracebacks se corrigen para que las líneas apunten al código del agente.
+- `sandbox_server/` + `Dockerfile.sandbox`: servidor HTTP mínimo (`POST /execute`) que corre ese motor en un contenedor aparte (`sandbox`): sin volumen del proyecto, sin `.env`, en la red `sandbox_net` (`internal`, sin internet), sistema de archivos de solo lectura, usuario sin privilegios y límites de memoria, CPU y procesos.
+- `utils/sandbox_client.py`: cliente asíncrono que usa el bot (`SANDBOX_URL`). Si el sandbox remoto falla devuelve error y no cae a ejecución local; sin `SANDBOX_URL` (desarrollo/tests) usa el motor local en un hilo.
 - `utils/database.py`: pool asyncpg, tablas `users_whitelist` y `cost_logs`.
 - `utils/okf_reader.py` y `knowledge/`: conceptos en Markdown con frontmatter YAML que se inyectan al prompt del sistema.
 - `runbooks/`: acciones pre-aprobadas y seguras (ej. `db_inspector`).
-- `tests/`: scripts de prueba (no usan pytest todavía).
+- `tests/`: pytest (`pytest.ini`, `requirements-dev.txt`). Marcadores: `db` (necesita PostgreSQL) y `llm` (gasta crédito; se omite por defecto, usar `-m llm`). Se corren dentro del contenedor: `docker exec ayllu_app python -m pytest`.
 
 ## Reglas duras
 
@@ -35,5 +37,7 @@ Bot de Telegram que enruta mensajes a un agente orquestador (LiteLLM, `gpt-4o-mi
 La sesión principal coordina: divide la tarea, delega, revisa los diffs y hace los commits.
 
 ## Hoja de ruta
+
+Estado: la Fase 0 está completa (sandbox en contenedor aparte, async, pytest).
 
 Misión 1: automatizar la compra de comida de la gata con aprobación humana. Fases: 0 base segura (sandbox, async), 1 búsqueda con tool calling, 2 órdenes con aprobación, 3 ejecución de compra, 4 recurrencia, alertas y evals.
