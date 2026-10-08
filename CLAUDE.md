@@ -33,8 +33,14 @@ Bot de Telegram que enruta mensajes a un agente orquestador (LiteLLM, `gpt-4o-mi
 - `dev`: implementa un cambio acotado.
 - `tester`: escribe y ejecuta tests; solo edita dentro de `tests/`.
 - `docs`: mantiene `CLAUDE.md`, README y `knowledge/`; solo edita Markdown.
+- `reviewer`: revisa un diff contra estas reglas y reporta; no edita nada (solo lectura).
 
-La sesión principal coordina: divide la tarea, delega, revisa los diffs y hace los commits.
+## Skills (en `.claude/skills/`)
+
+- `nuevo-runbook`: pasos para crear un runbook (código, ruta en el orquestador, concepto OKF y tests).
+- `nuevo-concepto-okf`: formato y reglas de un concepto en `knowledge/`.
+
+La sesión principal coordina: divide la tarea, delega, revisa los diffs y hace los commits. Antes de cada commit pasa el diff por `reviewer`.
 
 ## Hoja de ruta
 
