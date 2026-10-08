@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Servicio principal de la aplicación
   app:
@@ -13,8 +11,34 @@ services:
     volumes:
       - .:/app
     command: python -m bot.main
+    environment:
+      SANDBOX_URL: http://sandbox:8000
+    networks:
+      - default
+      - sandbox_net
     depends_on:
       - db
+      - sandbox
+
+  # Sandbox de ejecución de código: sin volumen del proyecto, sin .env y sin internet
+  sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox
+    container_name: ayllu_sandbox
+    restart: always
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    networks:
+      - sandbox_net
       
   # Servicio de Base de Datos PostgreSQL
   db:
@@ -29,6 +53,11 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
+networks:
+  # internal: true => los contenedores de esta red no tienen salida a internet
+  sandbox_net:
+    internal: true
 
 volumes:
   postgres_data:

@@ -2,7 +2,7 @@ import os
 import logging
 from litellm import acompletion
 from utils.okf_reader import okf_reader
-from utils.sandbox import sandbox
+from utils.sandbox_client import execute_code as sandbox_execute
 from runbooks.db_inspector import runbook_inspect_table_count
 
 logger = logging.getLogger("AylluOrchestrator")
@@ -23,7 +23,7 @@ class OrchestratorAgent:
 
         for attempt in range(1, max_attempts + 1):
             logger.info(f"🧪 Intento {attempt}/{max_attempts} de ejecución en Sandbox...")
-            result = sandbox.execute_code(current_code)
+            result = await sandbox_execute(current_code)
 
             if result["status"] == "success":
                 logger.info(f"✓ Código ejecutado con éxito en el intento {attempt}")

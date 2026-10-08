@@ -5,3 +5,4 @@ python-telegram-bot
 asyncpg
 python-dotenv
 pyyaml
+httpx
