@@ -52,7 +52,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Validar seguridad contra PostgreSQL
     if not await is_user_allowed(user_id):
         logger.warning(f"⛔ Acceso denegado en /start para ID no autorizado: {user_id}")
-        await update.message.reply_text("⛔ *Acceso denegado:* No estás en la lista de usuarios autorizados.", parse_mode="Markdown")
+        await reply_safe(update.message, "⛔ *Acceso denegado:* No estás en la lista de usuarios autorizados.")
         return
 
     welcome_text = (
@@ -61,7 +61,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "y me encargaré de procesarlo con nuestros modelos de IA.\n\n"
         "Escribe un mensaje para comenzar."
     )
-    await update.message.reply_text(welcome_text, parse_mode="Markdown")
+    await reply_safe(update.message, welcome_text)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -70,9 +70,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 🔒 Capa de Seguridad: Validar lista blanca en la BD
     if not await is_user_allowed(user_id):
         logger.warning(f"⛔ Intento de acceso no autorizado detectado de @{username} (ID: {user_id})")
-        await update.message.reply_text(
-            "⛔ *Acceso denegado:* Tu ID de Telegram no está autorizado para interactuar con este bot.",
-            parse_mode="Markdown"
+        await reply_safe(
+            update.message,
+            "⛔ *Acceso denegado:* Tu ID de Telegram no está autorizado para interactuar con este bot."
         )
         return
 
