@@ -29,9 +29,3 @@ def test_reply_safe_reintenta_sin_markdown():
     asyncio.run(reply_safe(msg, "texto *roto"))
     assert msg.reply_text.await_count == 2
     assert "parse_mode" not in msg.reply_text.await_args_list[1].kwargs
-
-
-if __name__ == "__main__":
-    test_costo_none_y_acompletion()
-    test_reply_safe_reintenta_sin_markdown()
-    print("OK")

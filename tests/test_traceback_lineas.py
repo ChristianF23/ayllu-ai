@@ -11,9 +11,3 @@ def test_traceback_apunta_a_la_linea_del_agente():
 
 def test_fix_traceback_no_baja_de_uno():
     assert 'line 1' in _fix_traceback_lines('File "<string>", line 2')
-
-
-if __name__ == "__main__":
-    test_traceback_apunta_a_la_linea_del_agente()
-    test_fix_traceback_no_baja_de_uno()
-    print("OK")

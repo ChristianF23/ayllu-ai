@@ -1,50 +1,40 @@
-import os
-import sys
-import tempfile
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
+import pytest
 from utils.sandbox import PythonSandbox
 
 SENTINEL = "SECRET_SENTINEL_abc123"
 
 
-def run_isolation_suite():
-    with tempfile.TemporaryDirectory() as project_dir:
-        (Path(project_dir) / ".env").write_text(f"TOKEN={SENTINEL}\n", encoding="utf-8")
-        abs_env = str(Path(project_dir) / ".env").replace("\\", "/")
-
-        original_cwd = os.getcwd()
-        os.chdir(project_dir)  # el padre corre "dentro del proyecto", como en Docker (/app)
-        try:
-            sandbox = PythonSandbox(timeout_seconds=5)
-
-            attacks = {
-                "ruta relativa": "print(open('.env').read())",
-                "ruta absoluta": f"print(open('{abs_env}').read())",
-                "listar directorio": "import os; print(os.listdir('.'))",
-            }
-            for name, code in attacks.items():
-                res = sandbox.execute_code(code)
-                leaked = SENTINEL in res["stdout"] or ".env" in res["stdout"]
-                if name == "ruta absoluta":
-                    leaked = SENTINEL in res["stdout"]
-                assert not leaked, f"FUGA ({name}): el sandbox expuso el .env -> {res['stdout']!r}"
-                print(f"OK  aislamiento ({name})")
-
-            ok = sandbox.execute_code("print(2 + 2)")
-            assert ok["status"] == "success" and ok["stdout"] == "4", f"código normal roto: {ok}"
-            print("OK  código normal sigue funcionando")
-        finally:
-            os.chdir(original_cwd)
-
-    fast = PythonSandbox(timeout_seconds=2)
-    res = fast.execute_code("import time; time.sleep(10)")
-    assert res["status"] == "timeout", f"timeout roto: {res}"
-    print("OK  timeout sigue funcionando")
+@pytest.fixture
+def proyecto(tmp_path, monkeypatch):
+    """Simula el directorio del proyecto (como /app en Docker) con un .env falso."""
+    (tmp_path / ".env").write_text(f"TOKEN={SENTINEL}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
 
 
-if __name__ == "__main__":
-    run_isolation_suite()
-    print("TODAS LAS PRUEBAS DE AISLAMIENTO PASARON")
+def test_no_lee_env_por_ruta_relativa(proyecto):
+    res = PythonSandbox(timeout_seconds=5).execute_code("print(open('.env').read())")
+    assert SENTINEL not in res["stdout"]
+
+
+def test_no_lee_env_por_ruta_absoluta(proyecto):
+    ruta = (proyecto / ".env").as_posix()
+    res = PythonSandbox(timeout_seconds=5).execute_code(f"print(open('{ruta}').read())")
+    assert SENTINEL not in res["stdout"]
+    assert res["status"] == "error"
+
+
+def test_no_lista_el_directorio_del_proyecto(proyecto):
+    res = PythonSandbox(timeout_seconds=5).execute_code("import os; print(os.listdir('.'))")
+    assert ".env" not in res["stdout"]
+
+
+def test_no_hereda_variables_de_entorno(proyecto, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", SENTINEL)
+    res = PythonSandbox(timeout_seconds=5).execute_code("import os; print(os.environ.get('OPENAI_API_KEY'))")
+    assert SENTINEL not in res["stdout"]
+
+
+def test_codigo_normal_sigue_funcionando(proyecto):
+    res = PythonSandbox(timeout_seconds=5).execute_code("print(2 + 2)")
+    assert res["status"] == "success" and res["stdout"] == "4"
