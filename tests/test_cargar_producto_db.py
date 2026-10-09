@@ -11,6 +11,8 @@ SUFIJO = ".cargar-prueba-ayllu.com.co"
 TIENDA = f"tienda{SUFIJO}"
 TIENDA_INACTIVA = f"inactiva{SUFIJO}"
 PATRON = f"%{SUFIJO}"
+MASCOTA = "Zqxcargamascota"
+PATRON_MASCOTAS = "zqxcargamascota%"
 
 
 async def _limpiar():
@@ -18,6 +20,13 @@ async def _limpiar():
     await init_db_pool()
     try:
         async with database.DB_POOL.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM pet_products WHERE pet_id IN "
+                "(SELECT id FROM pets WHERE name_key LIKE $1) "
+                "OR product_id IN (SELECT id FROM products WHERE store_domain LIKE $2);",
+                PATRON_MASCOTAS, PATRON,
+            )
+            await conn.execute("DELETE FROM pets WHERE name_key LIKE $1;", PATRON_MASCOTAS)
             await conn.execute("DELETE FROM products WHERE store_domain LIKE $1;", PATRON)
             await conn.execute("DELETE FROM allowed_stores WHERE domain LIKE $1;", PATRON)
     finally:
@@ -125,3 +134,43 @@ async def test_crear_tienda_con_url_de_otro_dominio_no_crea_tienda(limpio, capsy
 async def test_desactivar_id_inexistente_sale_1(limpio, capsys):
     assert await cp.cmd_desactivar(_args(["desactivar", "--id", str(2**62)])) == 1
     assert "no existe" in capsys.readouterr().err
+
+
+@pytest.mark.db
+async def test_flujo_mascota_asignar_mascotas_desasignar(limpio, capsys):
+    assert await cp.cmd_agregar(_args(_agregar_argv("pet", extra=["--crear-tienda"]))) == 0
+    pid = int(re.search(r"id (\d+)", capsys.readouterr().out).group(1))
+
+    assert await cp.cmd_mascota(_args(["mascota", "--nombre", MASCOTA, "--especie", "gato"])) == 0
+    assert MASCOTA in capsys.readouterr().out
+    assert database.DB_POOL is None
+
+    # Mismo nombre con otra forma: avisa por stderr, código 0, no cambia la especie.
+    argv = ["mascota", "--nombre", MASCOTA.lower(), "--especie", "perro"]
+    assert await cp.cmd_mascota(_args(argv)) == 0
+    err = capsys.readouterr().err
+    assert "ya existía" in err and "especie gato" in err
+    fila = await _consultar("SELECT species FROM pets WHERE name_key = $1;", MASCOTA.lower())
+    assert fila["species"] == "gato"
+
+    argv = ["asignar", "--mascota", MASCOTA.upper(), "--producto-id", str(pid)]
+    assert await cp.cmd_asignar(_args(argv)) == 0
+    assert "vinculado" in capsys.readouterr().out
+
+    assert await cp.cmd_mascotas(_args(["mascotas"])) == 0
+    salida = capsys.readouterr().out
+    assert f"{MASCOTA} | gato | activa" in salida
+    assert f"- [{pid}] Alimento gato prueba" in salida
+
+    argv = ["desasignar", "--mascota", MASCOTA.lower(), "--producto-id", str(pid)]
+    assert await cp.cmd_desasignar(_args(argv)) == 0
+    assert await cp.cmd_mascotas(_args(["mascotas"])) == 0
+    lineas = capsys.readouterr().out.splitlines()
+    i = next(n for n, linea in enumerate(lineas) if f"{MASCOTA} | gato" in linea)
+    assert lineas[i + 1].strip() == "(sin productos vinculados)"
+
+    # Mascota inexistente o producto inexistente: código 1.
+    argv = ["asignar", "--mascota", "Zqxcargamascotanada", "--producto-id", str(pid)]
+    assert await cp.cmd_asignar(_args(argv)) == 1
+    assert "mascota" in capsys.readouterr().err
+    assert database.DB_POOL is None

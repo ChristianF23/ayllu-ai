@@ -15,6 +15,13 @@ Ejemplos (producto y tienda ficticios):
     docker exec ayllu_app python -m scripts.cargar_producto listar --consulta gato
     docker exec ayllu_app python -m scripts.cargar_producto desactivar --id 3
 
+Mascotas y vínculo explícito mascota-producto (nombres ficticios):
+
+    docker exec ayllu_app python -m scripts.cargar_producto mascota --nombre Michi --especie gato
+    docker exec ayllu_app python -m scripts.cargar_producto asignar --mascota michi --producto-id 3
+    docker exec ayllu_app python -m scripts.cargar_producto desasignar --mascota michi --producto-id 3
+    docker exec ayllu_app python -m scripts.cargar_producto mascotas
+
 El precio se escribe como número con punto decimal (44650 o 44650.50), sin
 símbolo ni separador de miles. Códigos de salida: 0 ok, 1 error de
 validación o de uso, 2 error inesperado.
@@ -26,7 +33,7 @@ import re
 import sys
 from decimal import Decimal
 
-from utils import catalog, database
+from utils import catalog, database, pets
 from utils.domain_allowlist import is_url_allowed, normalize_domain
 
 logger = logging.getLogger("AylluCargaProducto")
@@ -137,6 +144,18 @@ def construir_parser() -> argparse.ArgumentParser:
     desactivar = sub.add_parser("desactivar", help="Desactiva un producto por id.")
     desactivar.add_argument("--id", type=int, required=True)
 
+    mascota = sub.add_parser("mascota", help="Registra una mascota (no reactiva una inactiva).")
+    mascota.add_argument("--nombre", required=True)
+    mascota.add_argument("--especie", required=True, help="Ej. gato, perro.")
+
+    for nombre, ayuda in (("asignar", "Vincula un producto a una mascota."),
+                          ("desasignar", "Desactiva el vínculo de un producto con una mascota.")):
+        vinculo = sub.add_parser(nombre, help=ayuda)
+        vinculo.add_argument("--mascota", required=True)
+        vinculo.add_argument("--producto-id", type=int, required=True)
+
+    sub.add_parser("mascotas", help="Lista las mascotas con sus productos vinculados.")
+
     return parser
 
 
@@ -240,10 +259,111 @@ async def cmd_desactivar(args) -> int:
         await database.close_db_pool()
 
 
+async def _ejecutar_con_pool(accion, contexto: str) -> int:
+    """init/close del pool siempre; ValueError -> 1, otro error -> 2."""
+    try:
+        await database.init_db_pool()
+        return await accion()
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except Exception:
+        logger.exception(f"Error inesperado al {contexto}.")
+        return 2
+    finally:
+        await database.close_db_pool()
+
+
+async def cmd_mascota(args) -> int:
+    # Validación completa ANTES de tocar la BD.
+    try:
+        pets.normalizar_nombre_mascota(args.nombre)
+        pets._validar_especie(args.especie)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    async def accion():
+        # Para avisar si el nombre ya existía ("Mía" y "Mia" comparten clave).
+        existentes = {m["id"]: m for m in await pets.listar_mascotas()}
+        pet_id = await pets.add_pet(args.nombre, args.especie)
+        previa = existentes.get(pet_id)
+        if previa is not None:
+            estado = "activa" if previa["is_active"] else "inactiva (NO se reactiva)"
+            print(
+                f"Aviso: ya existía la mascota {previa['name']!r} (id {pet_id}, especie "
+                f"{previa['species']}, {estado}); no se cambia su especie ni se crea otra.",
+                file=sys.stderr,
+            )
+            return 0
+        print(f"Mascota {args.nombre.strip()!r} registrada con id {pet_id}.")
+        return 0
+
+    return await _ejecutar_con_pool(accion, "registrar la mascota")
+
+
+def _prevalidar_vinculo(args) -> None:
+    pets.normalizar_nombre_mascota(args.mascota)
+    pets._validar_product_id(args.producto_id)
+
+
+async def cmd_asignar(args) -> int:
+    try:
+        _prevalidar_vinculo(args)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    async def accion():
+        await pets.link_product(args.mascota, args.producto_id)
+        print(f"Producto {args.producto_id} vinculado a la mascota {args.mascota.strip()!r}.")
+        return 0
+
+    return await _ejecutar_con_pool(accion, "vincular el producto")
+
+
+async def cmd_desasignar(args) -> int:
+    try:
+        _prevalidar_vinculo(args)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    async def accion():
+        if await pets.unlink_product(args.mascota, args.producto_id):
+            print(f"Producto {args.producto_id} desvinculado de la mascota {args.mascota.strip()!r}.")
+            return 0
+        print(f"Error: la mascota {args.mascota.strip()!r} no tenía vinculado el producto "
+              f"{args.producto_id}.", file=sys.stderr)
+        return 1
+
+    return await _ejecutar_con_pool(accion, "desvincular el producto")
+
+
+async def cmd_mascotas(args) -> int:
+    async def accion():
+        mascotas = await pets.listar_mascotas()
+        print(f"Mascotas ({len(mascotas)}):")
+        for m in mascotas:
+            estado = "activa" if m["is_active"] else "inactiva"
+            print(f"  [{m['id']}] {m['name']} | {m['species']} | {estado}")
+            if not m["productos"]:
+                print("      (sin productos vinculados)")
+            for p in m["productos"]:
+                print(f"      - [{p['id']}] {p['name']}")
+        return 0
+
+    return await _ejecutar_con_pool(accion, "listar las mascotas")
+
+
 _SUBCOMANDOS = {
     "agregar": cmd_agregar,
     "listar": cmd_listar,
     "desactivar": cmd_desactivar,
+    "mascota": cmd_mascota,
+    "asignar": cmd_asignar,
+    "desasignar": cmd_desasignar,
+    "mascotas": cmd_mascotas,
 }
 
 

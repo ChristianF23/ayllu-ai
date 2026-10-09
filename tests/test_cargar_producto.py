@@ -223,7 +223,7 @@ def _con(argv, opcion, valor):
     ("--tienda", "tienda-ejemplo.com.co.evil.com"),
     ("--tienda", "127.0.0.1"),
     ("--nombre", "  "),
-    ("--nombre", "Alimento​gato"),
+    ("--nombre", "Alimento\u200bgato"),
     ("--marca", "M" * 101),
     ("--moneda", "cop"),
     ("--precio", "100000000.01"),
@@ -356,3 +356,164 @@ async def test_desactivar_error_inesperado_sale_2(falsos):
     f = falsos(deactivate=RuntimeError("x"))
     assert await cp.cmd_desactivar(_args(["desactivar", "--id", "5"])) == 2
     assert f.nombres()[-1] == "close_db_pool"
+
+
+# --- mascotas ---
+
+class _PetsFalsos:
+    def __init__(self, link=True, unlink=True, add=5, mascotas=()):
+        self.llamadas = []
+        self._link = link
+        self._unlink = unlink
+        self._add = add
+        self._mascotas = list(mascotas)
+
+    async def init_db_pool(self):
+        self.llamadas.append(("init_db_pool",))
+
+    async def close_db_pool(self):
+        self.llamadas.append(("close_db_pool",))
+
+    async def add_pet(self, nombre, especie):
+        self.llamadas.append(("add_pet", nombre, especie))
+        if isinstance(self._add, BaseException):
+            raise self._add
+        return self._add
+
+    async def link_product(self, mascota, producto):
+        self.llamadas.append(("link_product", mascota, producto))
+        if isinstance(self._link, BaseException):
+            raise self._link
+        return self._link
+
+    async def unlink_product(self, mascota, producto):
+        self.llamadas.append(("unlink_product", mascota, producto))
+        if isinstance(self._unlink, BaseException):
+            raise self._unlink
+        return self._unlink
+
+    async def listar_mascotas(self):
+        self.llamadas.append(("listar_mascotas",))
+        return self._mascotas
+
+    def nombres(self):
+        return [ll[0] for ll in self.llamadas]
+
+
+@pytest.fixture
+def pets_falsos(monkeypatch):
+    def _instalar(**kw):
+        f = _PetsFalsos(**kw)
+        for nombre in ("init_db_pool", "close_db_pool"):
+            monkeypatch.setattr(cp.database, nombre, getattr(f, nombre))
+        for nombre in ("add_pet", "link_product", "unlink_product", "listar_mascotas"):
+            monkeypatch.setattr(cp.pets, nombre, getattr(f, nombre))
+        return f
+    return _instalar
+
+
+def test_parser_mascotas():
+    a = _args(["mascota", "--nombre", "Michi", "--especie", "gato"])
+    assert (a.subcomando, a.nombre, a.especie) == ("mascota", "Michi", "gato")
+    a = _args(["asignar", "--mascota", "michi", "--producto-id", "3"])
+    assert (a.subcomando, a.mascota, a.producto_id) == ("asignar", "michi", 3)
+    a = _args(["desasignar", "--mascota", "michi", "--producto-id", "3"])
+    assert a.subcomando == "desasignar" and a.producto_id == 3
+    assert _args(["mascotas"]).subcomando == "mascotas"
+
+
+@pytest.mark.parametrize("argv", [
+    ["mascota", "--nombre", "Michi"],
+    ["asignar", "--mascota", "michi"],
+    ["asignar", "--mascota", "michi", "--producto-id", "abc"],
+    ["desasignar", "--producto-id", "3"],
+])
+def test_main_mascotas_error_de_uso_sale_con_1(pets_falsos, argv, capsys):
+    f = pets_falsos()
+    assert cp.main(argv) == 1
+    assert f.llamadas == []
+    assert "Error de uso" in capsys.readouterr().err
+
+
+async def test_mascota_ok(pets_falsos, capsys):
+    f = pets_falsos(add=9)
+    assert await cp.cmd_mascota(_args(["mascota", "--nombre", " Michí ", "--especie", "Gato"])) == 0
+    assert f.llamadas == [("init_db_pool",), ("listar_mascotas",), ("add_pet", " Michí ", "Gato"),
+                          ("close_db_pool",)]
+    salida = capsys.readouterr()
+    assert "registrada con id 9" in salida.out
+    assert "Aviso" not in salida.err
+
+
+@pytest.mark.parametrize("activa,texto", [(True, "activa"), (False, "NO se reactiva")])
+async def test_mascota_existente_avisa_por_stderr(pets_falsos, capsys, activa, texto):
+    pets_falsos(add=4, mascotas=[{"id": 4, "name": "Mía", "species": "gato",
+                                  "is_active": activa, "productos": []}])
+    assert await cp.cmd_mascota(_args(["mascota", "--nombre", "Mia", "--especie", "perro"])) == 0
+    salida = capsys.readouterr()
+    assert "Aviso: ya existía la mascota 'Mía' (id 4, especie gato" in salida.err
+    assert "no se cambia su especie" in salida.err and texto in salida.err
+    assert "registrada con id" not in salida.out
+
+
+@pytest.mark.parametrize("argv", [
+    ["mascota", "--nombre", "Mi!chi", "--especie", "gato"],
+    ["mascota", "--nombre", "Michi", "--especie", "gato persa"],
+    ["mascota", "--nombre", "Mi\u200bchi", "--especie", "gato"],
+    ["asignar", "--mascota", "Mi/chi", "--producto-id", "3"],
+    ["asignar", "--mascota", "michi", "--producto-id", "0"],
+    ["desasignar", "--mascota", "", "--producto-id", "3"],
+])
+async def test_mascotas_invalido_sale_1_sin_tocar_bd(pets_falsos, argv, capsys):
+    f = pets_falsos()
+    assert await cp._SUBCOMANDOS[argv[0]](_args(argv)) == 1
+    assert f.llamadas == []
+    assert "Error" in capsys.readouterr().err
+
+
+async def test_asignar_ok(pets_falsos, capsys):
+    f = pets_falsos()
+    assert await cp.cmd_asignar(_args(["asignar", "--mascota", "michi", "--producto-id", "419"])) == 0
+    assert f.llamadas == [("init_db_pool",), ("link_product", "michi", 419), ("close_db_pool",)]
+    assert "vinculado" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("error,codigo", [(ValueError("No hay una mascota activa"), 1),
+                                          (RuntimeError("BD caída"), 2)])
+async def test_asignar_errores_cierran_pool(pets_falsos, error, codigo, capsys):
+    f = pets_falsos(link=error)
+    assert await cp.cmd_asignar(_args(["asignar", "--mascota", "michi", "--producto-id", "4"])) == codigo
+    assert f.nombres()[-1] == "close_db_pool"
+    assert "Traceback" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("resultado,codigo", [(True, 0), (False, 1)])
+async def test_desasignar(pets_falsos, resultado, codigo):
+    f = pets_falsos(unlink=resultado)
+    argv = ["desasignar", "--mascota", "michi", "--producto-id", "4"]
+    assert await cp.cmd_desasignar(_args(argv)) == codigo
+    assert f.llamadas == [("init_db_pool",), ("unlink_product", "michi", 4), ("close_db_pool",)]
+
+
+async def test_mascotas_muestra_vinculos(pets_falsos, capsys):
+    f = pets_falsos(mascotas=[
+        {"id": 1, "name": "Michí", "species": "gato", "is_active": True,
+         "productos": [{"id": 419, "name": "Biodieta"}]},
+        {"id": 2, "name": "Tom", "species": "perro", "is_active": False, "productos": []},
+    ])
+    assert await cp.cmd_mascotas(_args(["mascotas"])) == 0
+    assert f.nombres() == ["init_db_pool", "listar_mascotas", "close_db_pool"]
+    salida = capsys.readouterr().out
+    assert "[1] Michí | gato | activa" in salida and "- [419] Biodieta" in salida
+    assert "[2] Tom | perro | inactiva" in salida and "(sin productos vinculados)" in salida
+
+
+async def test_mascotas_cierra_pool_si_init_falla(pets_falsos, monkeypatch):
+    f = pets_falsos()
+
+    async def init_que_falla():
+        raise ConnectionError("sin BD")
+
+    monkeypatch.setattr(cp.database, "init_db_pool", init_que_falla)
+    assert await cp.cmd_mascotas(_args(["mascotas"])) == 2
+    assert f.nombres() == ["close_db_pool"]
