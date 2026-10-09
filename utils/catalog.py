@@ -234,8 +234,15 @@ _STOPWORDS = frozenset({
     "de", "del", "la", "las", "el", "los", "un", "una", "unos", "unas", "y", "o",
     "con", "sin", "para", "por", "en", "a", "al", "que", "me", "mi", "tu", "su",
     "es", "lo",
+    # Unidades y palabras de relleno de preguntas al bot.
+    "kg", "g", "gr", "grs", "ml", "l", "lt", "marca", "producto", "productos",
+    "tienes", "tiene", "hay", "alguna", "algun", "algo", "no", "se", "mas", "más",
+    "quiero", "necesito", "busca", "buscar", "dame", "precio", "cuanto", "cuánto",
+    "cuesta", "enlace", "link",
 })
-_MIN_TOKEN = 2
+# Longitud mínima de un token DESPUÉS de normalizar.
+_MIN_TOKEN = 3
+_NUMERICO = re.compile(r"[\d.,]+")
 _VOCALES_FINALES = ("a", "o", "e")
 
 
@@ -256,15 +263,17 @@ def _normalizar_token(token: str) -> str:
 
 def _tokens_significativos(texto: str) -> list[str]:
     """
-    Minúsculas, sin stopwords ni tokens de menos de 2 caracteres, normalizados
-    y sin duplicados (en orden), con un máximo de 6. Lanza ValueError si no
-    queda ninguno.
+    Minúsculas, sin stopwords ni números, normalizados, de al menos 3
+    caracteres tras normalizar y sin duplicados (en orden), con un máximo de
+    6. Lanza ValueError si no queda ninguno.
     """
     tokens = []
     for crudo in texto.lower().split():
-        if len(crudo) < _MIN_TOKEN or crudo in _STOPWORDS:
+        if crudo in _STOPWORDS or _NUMERICO.fullmatch(crudo):
             continue
         token = _normalizar_token(crudo)
+        if len(token) < _MIN_TOKEN or token in _STOPWORDS:
+            continue
         if token not in tokens:
             tokens.append(token)
     if not tokens:
@@ -275,12 +284,18 @@ def _tokens_significativos(texto: str) -> list[str]:
     return tokens[:_MAX_TOKENS]
 
 
+def _puntaje_minimo(n_tokens: int) -> int:
+    """1 si hay 1 o 2 tokens; con 3 o más, la mitad redondeada hacia arriba."""
+    return 1 if n_tokens <= 2 else math.ceil(n_tokens / 2)
+
+
 async def search_products(query: str, max_results: int = 5) -> list[dict]:
     """
     Busca productos activos de tiendas activas por palabras clave. Cada token
     significativo (sin stopwords, normalizado) suma 1 punto si aparece en el
     nombre o en la marca (sin distinguir mayúsculas). Solo se devuelven los
-    productos con al menos 1 punto, ordenados por puntaje (desc), precio (asc)
+    productos con el puntaje mínimo (_puntaje_minimo: 1 con 1-2 tokens, la
+    mitad redondeada hacia arriba con 3 o más), ordenados por puntaje (desc), precio (asc)
     e id. Lanza ValueError si la consulta es inválida o no tiene palabras
     útiles (antes de tocar la BD). Falla cerrado: sin pool o ante error de BD
     devuelve [].
@@ -299,7 +314,8 @@ async def search_products(query: str, max_results: int = 5) -> list[dict]:
         logger.error("❌ Pool de PostgreSQL no inicializado: catálogo vacío.")
         return []
 
-    # Solo se interpolan números de parámetro ($n), nunca datos. Cada token
+    # Solo se interpolan números de parámetro ($n) y el mínimo entero calculado
+    # aquí, nunca texto del usuario. Cada token
     # suma 0 o 1 aunque coincida en nombre y marca.
     puntos = [
         f"(CASE WHEN p.name ILIKE ${i} ESCAPE '\\' OR p.brand ILIKE ${i} ESCAPE '\\' "
@@ -316,7 +332,7 @@ async def search_products(query: str, max_results: int = 5) -> list[dict]:
         JOIN allowed_stores s ON s.domain = p.store_domain
         WHERE p.is_active = TRUE AND s.is_active = TRUE
     ) AS candidatos
-    WHERE puntaje >= 1
+    WHERE puntaje >= {int(_puntaje_minimo(len(tokens)))}
     ORDER BY puntaje DESC, price ASC, id
     LIMIT ${len(tokens) + 1};
     """

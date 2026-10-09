@@ -20,6 +20,8 @@ URL_PRUEBA = f"https://{TIENDA}/biodieta-digestivo-prueba"
 NOMBRE = "Biodieta Digestivo - Bienestar Digestivo 1 kg"
 MARCA = "Zqxllmayllu"
 PRECIO = 44650
+# Dominios de tiendas reales cuyos enlaces no deben aparecer si no hay resultados.
+TIENDAS_REALES = ("ecocat.com.co", "mercadolibre.com.co")
 
 
 async def _borrar():
@@ -77,10 +79,12 @@ async def test_frase_natural_encuentra_comida_digestiva(catalogo_prueba, llamada
 
 async def test_producto_inexistente_no_menciona_enlaces(catalogo_prueba, llamadas_herramienta):
     agente = OrchestratorAgent()
+    # Palabras que no existen en el catálogo ni normalizan a subcadenas comunes
+    # (cohetes->cohet, titanio->titani, dinosaurios->dinosauri, qwzxyplm).
     resultado = await agente.process_request(
-        "¿Tienes arena de titanio para dinosaurios marca Qwzxyplm?"
+        "¿Tienes cohetes de titanio para dinosaurios marca Qwzxyplm?"
     )
     assert resultado["status"] == "success", resultado
     texto = resultado["response"]
-    assert URL_PRUEBA not in texto, texto
-    assert "http://" not in texto and "https://" not in texto, texto
+    for prohibido in (URL_PRUEBA, TIENDA, *TIENDAS_REALES, "http://", "https://"):
+        assert prohibido not in texto, texto

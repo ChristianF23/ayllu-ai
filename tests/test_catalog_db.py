@@ -17,6 +17,7 @@ TIENDAS = [TIENDA, TIENDA_INACTIVA, TIENDA_INEXISTENTE, TIENDA_SUB]
 
 # Palabra improbable para aislar las búsquedas de datos reales.
 MARCA = "Zqxayllu"
+MARCA_2 = "Zqxsegunda"
 
 
 def _url(tienda, sufijo):
@@ -54,7 +55,11 @@ async def _borrar_datos_de_prueba():
 
 
 async def _buscar(consulta, max_results=10):
-    """Busca y deja solo resultados de las tiendas de prueba (aísla datos reales)."""
+    """
+    Busca con el tope de resultados (10) y deja solo los de las tiendas de
+    prueba. Las consultas llevan marcas únicas (Zqx...) para que los datos
+    reales no ocupen el LIMIT antes de este filtro.
+    """
     return [r for r in await search_products(consulta, max_results=max_results)
             if r["store"] in TIENDAS]
 
@@ -101,17 +106,17 @@ async def test_upsert_reactiva_producto_desactivado(pool):
 
 @pytest.mark.db
 async def test_busqueda_case_insensitive_puntaje_y_orden(pool):
-    # Antes la búsqueda exigía todos los tokens (AND); ahora puntúa (OR).
+    # Antes la búsqueda exigía todos los tokens (AND); ahora puntúa con mínimo.
     await _agregar("Comida GATO adulto", 90000, "1")
     await _agregar("comida gato cachorro", 50000, "2")
     await _agregar("Comida perro adulto", 10000, "3")
 
+    # n=3 -> mínimo 2. Puntaje 3 (marca+gato+comida) primero, por precio; luego el perro (2).
     resultado = await _buscar(f"{MARCA.lower()} GaTo comida")
-    # Puntaje 3 (marca+gato+comida) primero, por precio; luego el perro (2).
     assert [r["price"] for r in resultado] == [50000.0, 90000.0, 10000.0]
     assert all(r["store"] == TIENDA and r["currency"] == "COP" for r in resultado)
 
-    # "gato perro" ya no da vacío: cada producto coincide con uno de los dos.
+    # "gato perro": cada producto suma marca + uno de los dos = 2 >= 2.
     assert len(await _buscar(f"{MARCA} gato perro")) == 3
     # La marca también se busca
     assert len(await _buscar(MARCA)) == 3
@@ -120,30 +125,54 @@ async def test_busqueda_case_insensitive_puntaje_y_orden(pool):
 @pytest.mark.db
 async def test_frase_natural_encuentra_producto(pool):
     pid = await _agregar("Biodieta Digestivo - Bienestar Digestivo 1 kg", 44650, "bio")
+    # n=4 (comid, digestiv, gat, marca) -> mínimo 2: digestiv + marca.
     resultado = await _buscar(f"comida digestiva para gatos {MARCA}")
     assert [r["id"] for r in resultado] == [pid]
 
 
 @pytest.mark.db
 async def test_mayor_puntaje_primero_aunque_cueste_mas(pool):
-    caro = await _agregar("Biodieta Digestivo gato", 90000, "caro", marca="Otra")
-    barato = await _agregar("Snack digestivo", 1000, "barato", marca="Otra")
-    resultado = await _buscar("digestivo gato")
+    caro = await _agregar("Biodieta Digestivo gato", 90000, "caro")
+    barato = await _agregar("Snack digestivo", 1000, "barato")
+    resultado = await _buscar(f"digestivo gato {MARCA}")
     assert [r["id"] for r in resultado] == [caro, barato]
 
 
 @pytest.mark.db
 async def test_genero_y_plural_en_la_consulta(pool):
-    pid = await _agregar("Bienestar Digestivo", 1000, "gen", marca="Otra")
-    assert [r["id"] for r in await _buscar("digestiva")] == [pid]
-    assert [r["id"] for r in await _buscar("DIGESTIVOS")] == [pid]
+    pid = await _agregar("Bienestar Digestivo", 1000, "gen", marca=MARCA_2)
+    assert [r["id"] for r in await _buscar(f"{MARCA_2} digestiva")][:1] == [pid]
+    assert [r["id"] for r in await _buscar(f"{MARCA_2} DIGESTIVOS")][:1] == [pid]
+    # Con 3 tokens (mínimo 2) la marca sola no basta: hace falta "digestiv".
+    assert [r["id"] for r in await _buscar(f"{MARCA_2} digestiva perro")] == [pid]
 
 
 @pytest.mark.db
 async def test_gata_encuentra_producto_para_gatos(pool):
-    pid = await _agregar("Alimento seco para gatos 1 kg", 30000, "gata", marca="Otra")
-    assert [r["id"] for r in await _buscar("gata")] == [pid]
-    assert [r["id"] for r in await _buscar("comida para la gata")] == [pid]
+    pid = await _agregar("Alimento seco para gatos 1 kg", 30000, "gata", marca=MARCA_2)
+    assert [r["id"] for r in await _buscar(f"{MARCA_2} gata")] == [pid]
+    assert [r["id"] for r in await _buscar(f"comida para la gata {MARCA_2}")] == [pid]
+
+
+@pytest.mark.db
+async def test_cuatro_tokens_exigen_dos_coincidencias(pool):
+    una = await _agregar("Alimento seco", 1000, "una", marca=MARCA_2)
+    dos = await _agregar("Arena titanio", 5000, "dos", marca=MARCA_2)
+    # n=4 -> mínimo 2: "una" solo coincide con la marca (1) y NO aparece.
+    resultado = await _buscar(f"{MARCA_2} titanio dinosaurio volcanes")
+    assert [r["id"] for r in resultado] == [dos]
+    assert una not in [r["id"] for r in resultado]
+
+
+@pytest.mark.db
+async def test_kg_no_puntua(pool):
+    barato = await _agregar("Alimento seco", 1000, "sin-kg", marca=MARCA_2)
+    con_kg = await _agregar("Alimento seco 1 kg", 9000, "con-kg", marca=MARCA_2)
+    # Si "kg" puntuara, el producto con kg (más caro) saldría primero.
+    resultado = await _buscar(f"{MARCA_2} kg")
+    assert [r["id"] for r in resultado] == [barato, con_kg]
+    with pytest.raises(ValueError):
+        await search_products("kg 500")
 
 
 @pytest.mark.db
@@ -154,14 +183,14 @@ async def test_sin_coincidencias_devuelve_vacio(pool):
 
 @pytest.mark.db
 async def test_comodines_like_son_literales(pool):
-    await _agregar("Arena 100% natural", 20000, "p", marca="Otra")
-    await _agregar("Arena 1000 natural", 15000, "q", marca="Otra")
-    await _agregar("Arena a_b", 5000, "u", marca="Otra")
-    await _agregar("Arena axb", 4000, "v", marca="Otra")
+    await _agregar("Arena Zqx100%natural", 20000, "p", marca="Otra")
+    await _agregar("Arena Zqx1000natural", 15000, "q", marca="Otra")
+    await _agregar("Arena Zqxa_b", 5000, "u", marca="Otra")
+    await _agregar("Arena Zqxaxb", 4000, "v", marca="Otra")
 
-    assert [r["name"] for r in await _buscar("100%")] == ["Arena 100% natural"]
-    assert [r["name"] for r in await _buscar("a_b")] == ["Arena a_b"]
-    assert [r["name"] for r in await _buscar("0%")] == ["Arena 100% natural"]
+    assert [r["name"] for r in await _buscar("zqx100%")] == ["Arena Zqx100%natural"]
+    assert [r["name"] for r in await _buscar("zqxa_b")] == ["Arena Zqxa_b"]
+    assert [r["name"] for r in await _buscar("0%natural")] == ["Arena Zqx100%natural"]
 
 
 @pytest.mark.db

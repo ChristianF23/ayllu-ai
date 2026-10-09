@@ -7,6 +7,7 @@ import pytest
 import utils.database as database
 from utils import catalog
 from utils.catalog import (
+    _puntaje_minimo,
     _STOPWORDS,
     _escapar_like,
     _normalizar_token,
@@ -387,8 +388,8 @@ async def test_search_tokens_parametrizados_y_escapados(monkeypatch):
     assert "ESCAPE '\\'" in sql
 
 
-@pytest.mark.parametrize("query,n_tokens", [("gato", 1), ("aa bb cc dd ee ff", 6),
-                                            ("aa bb cc dd ee ff gg hh", 6)])
+@pytest.mark.parametrize("query,n_tokens", [("gato", 1), ("aaa bbb ccc ddd eee fff", 6),
+                                            ("aaa bbb ccc ddd eee fff ggg hhh", 6)])
 async def test_search_placeholders_coinciden_con_parametros(monkeypatch, query, n_tokens):
     pool = _PoolFalso()
     monkeypatch.setattr(database, "DB_POOL", pool)
@@ -474,21 +475,32 @@ def test_stopwords_basicas():
     ("Digestiva DIGESTIVO digestivos", ["digestiv"]),
     ("x y gato", ["gat"]),
     ("un gato de la casa", ["gat", "cas"]),
-    ("aa bb cc dd ee ff gg hh", ["aa", "bb", "cc", "dd", "ee", "ff"]),
-    ("de la de x el gato a b c d e f gg hh ii jj kk", ["gat", "gg", "hh", "ii", "jj", "kk"]),
+    ("aaa bbb ccc ddd eee fff ggg hhh", ["aaa", "bbb", "ccc", "ddd", "eee", "fff"]),
+    ("de la de x el gato a b c d e f ggg hhh iii jjj kkk", ["gat", "ggg", "hhh", "iii", "jjj", "kkk"]),
+    # Tokens de menos de 3 caracteres DESPUÉS de normalizar no puntúan.
+    ("oso ojo gata", ["oso", "ojo", "gat"]),
+    ("ave pie gata", ["ave", "pie", "gat"]),
+    ("sea uva gato", ["sea", "uva", "gat"]),
+    ("xy ab gato", ["gat"]),
+    # Números y unidades se descartan.
+    ("gato 1 kg 500 g 2.5 1,5 lt ml", ["gat"]),
+    ("croquetas 3kg", ["croquet", "3kg"]),
+    ("tienes alguna comida dame el precio y el link", ["comid"]),
 ])
 def test_tokens_significativos(texto, esperado):
     assert _tokens_significativos(texto) == esperado
 
 
-@pytest.mark.parametrize("query", ["de la", "para el con", "x", "a b c", "y o a"])
+@pytest.mark.parametrize("query", ["de la", "para el con", "x", "a b c", "y o a",
+                                   "xy ab", "1 kg", "500 g 2.5 ml", "dame el precio",
+                                   "quiero algo", "tienes producto marca"])
 async def test_search_solo_stopwords_lanza_antes_de_tocar_bd(monkeypatch, query):
     monkeypatch.setattr(database, "DB_POOL", _PoolIntocable())
     with pytest.raises(ValueError, match="más específicas"):
         await search_products(query)
 
 
-@pytest.mark.parametrize("query,n_tokens", [("gato", 1), ("aa bb cc dd ee ff", 6)])
+@pytest.mark.parametrize("query,n_tokens", [("gato", 1), ("gato arena", 2)])
 async def test_search_sql_usa_puntaje(monkeypatch, query, n_tokens):
     pool = _PoolFalso()
     monkeypatch.setattr(database, "DB_POOL", pool)
@@ -497,7 +509,7 @@ async def test_search_sql_usa_puntaje(monkeypatch, query, n_tokens):
     plano = " ".join(sql.split())
     assert "AS puntaje" in plano
     assert plano.count("THEN 1 ELSE 0 END") == n_tokens
-    assert "WHERE puntaje >= 1" in plano
+    assert "WHERE puntaje >= 1" in plano  # n=1 y n=2 -> mínimo 1
     assert "ORDER BY puntaje DESC, price ASC, id" in plano
     # Sin AND entre tokens: solo se combinan con '+'.
     assert plano.count(" + ") == n_tokens - 1
@@ -507,3 +519,34 @@ async def test_search_sql_usa_puntaje(monkeypatch, query, n_tokens):
         assert len(re.findall(rf"\${i}(?!\d)", sql)) == 2
     assert len(re.findall(rf"\${n_tokens + 1}(?!\d)", sql)) == 1
     assert len(args) == n_tokens + 1
+
+
+def test_stopwords_nuevas():
+    for palabra in ("kg", "g", "gr", "grs", "ml", "l", "lt", "marca", "producto", "productos",
+                    "tienes", "tiene", "hay", "alguna", "algun", "algo", "no", "se", "mas",
+                    "más", "quiero", "necesito", "busca", "buscar", "dame", "precio",
+                    "cuanto", "cuánto", "cuesta", "enlace", "link"):
+        assert palabra in _STOPWORDS
+
+
+@pytest.mark.parametrize("n,minimo", [(1, 1), (2, 1), (3, 2), (4, 2), (5, 3), (6, 3)])
+def test_puntaje_minimo(n, minimo):
+    assert _puntaje_minimo(n) == minimo
+
+
+@pytest.mark.parametrize("query,n,minimo", [
+    ("gato", 1, 1),
+    ("gato arena", 2, 1),
+    ("gato arena comida", 3, 2),
+    ("gato arena comida digestivo", 4, 2),
+    ("aaa bbb ccc ddd eee fff", 6, 3),
+])
+async def test_search_sql_minimo_por_numero_de_tokens(monkeypatch, query, n, minimo):
+    pool = _PoolFalso()
+    monkeypatch.setattr(database, "DB_POOL", pool)
+    await search_products(query)
+    sql, args = pool.conn.llamadas[0]
+    plano = " ".join(sql.split())
+    assert re.findall(r"WHERE puntaje >= (\S+)", plano) == [str(minimo)]
+    assert plano.count("THEN 1 ELSE 0 END") == n
+    assert len(args) == n + 1
