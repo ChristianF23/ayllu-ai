@@ -157,6 +157,10 @@ async def deactivate_product(product_id: int) -> bool:
     """
     Marca un producto como inactivo. Devuelve True si afectó una fila.
     Igual que add_product: NUNCA se expone como herramienta al LLM.
+
+    En la misma sentencia (atómica) desactiva también sus vínculos con
+    mascotas (pet_products): si luego add_product lo reactiva por url, los
+    vínculos NO resucitan; para recuperarlos hay que volver a asignarlos.
     """
     if isinstance(product_id, bool) or not isinstance(product_id, int):
         raise ValueError("El id del producto debe ser entero.")
@@ -165,7 +169,13 @@ async def deactivate_product(product_id: int) -> bool:
     if not database.DB_POOL:
         raise RuntimeError("Pool de PostgreSQL no inicializado.")
 
+    # Un solo statement con CTE de escritura: ambas actualizaciones se
+    # confirman o fallan juntas. El estado devuelto es el de products.
     query = """
+    WITH vinculos AS (
+        UPDATE pet_products SET is_active = FALSE
+        WHERE product_id = $1
+    )
     UPDATE products SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
     WHERE id = $1;
     """
