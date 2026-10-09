@@ -229,19 +229,68 @@ async def listar_tiendas() -> list[dict]:
         return []
 
 
+# Palabras vacías del español que no aportan a la búsqueda.
+_STOPWORDS = frozenset({
+    "de", "del", "la", "las", "el", "los", "un", "una", "unos", "unas", "y", "o",
+    "con", "sin", "para", "por", "en", "a", "al", "que", "me", "mi", "tu", "su",
+    "es", "lo",
+})
+_MIN_TOKEN = 2
+_VOCALES_FINALES = ("a", "o", "e")
+
+
+def _normalizar_token(token: str) -> str:
+    """
+    Normalización ligera de plural/género del lado de la consulta (se usa
+    como subcadena con ILIKE): con más de 4 letras quita una 's' final y,
+    si quedan 4 letras o más, una vocal final (a, o, e).
+    Ej.: gata/gato/gatos->gat, arena->aren, digestiva->digestiv, croquetas->croquet, ecocat->ecocat.
+    """
+    t = token.lower()
+    if len(t) > 4 and t.endswith("s"):
+        t = t[:-1]
+    if len(t) >= 4 and t.endswith(_VOCALES_FINALES):
+        t = t[:-1]
+    return t
+
+
+def _tokens_significativos(texto: str) -> list[str]:
+    """
+    Minúsculas, sin stopwords ni tokens de menos de 2 caracteres, normalizados
+    y sin duplicados (en orden), con un máximo de 6. Lanza ValueError si no
+    queda ninguno.
+    """
+    tokens = []
+    for crudo in texto.lower().split():
+        if len(crudo) < _MIN_TOKEN or crudo in _STOPWORDS:
+            continue
+        token = _normalizar_token(crudo)
+        if token not in tokens:
+            tokens.append(token)
+    if not tokens:
+        raise ValueError(
+            "La consulta no tiene palabras útiles: usa palabras más específicas "
+            "(tipo de producto o marca)."
+        )
+    return tokens[:_MAX_TOKENS]
+
+
 async def search_products(query: str, max_results: int = 5) -> list[dict]:
     """
-    Busca productos activos de tiendas activas cuyo nombre o marca contengan
-    todos los tokens de la consulta (sin distinguir mayúsculas), del más
-    barato al más caro. Lanza ValueError si la consulta es inválida (antes de
-    tocar la BD). Falla cerrado: sin pool o ante error de BD devuelve [].
+    Busca productos activos de tiendas activas por palabras clave. Cada token
+    significativo (sin stopwords, normalizado) suma 1 punto si aparece en el
+    nombre o en la marca (sin distinguir mayúsculas). Solo se devuelven los
+    productos con al menos 1 punto, ordenados por puntaje (desc), precio (asc)
+    e id. Lanza ValueError si la consulta es inválida o no tiene palabras
+    útiles (antes de tocar la BD). Falla cerrado: sin pool o ante error de BD
+    devuelve [].
 
     Contrato para el wrapper de tool calling: la consulta viene del modelo,
     así que el wrapper DEBE capturar ValueError y devolver al modelo un
     mensaje de error legible (no propagar la excepción al handler del bot).
     """
     texto = _validar_texto(query, "La consulta", _MAX_QUERY)
-    tokens = texto.split()[:_MAX_TOKENS]
+    tokens = _tokens_significativos(texto)
     if isinstance(max_results, bool) or not isinstance(max_results, int):
         raise ValueError("max_results debe ser entero.")
     limite = max(1, min(_MAX_RESULTADOS, max_results))
@@ -250,18 +299,25 @@ async def search_products(query: str, max_results: int = 5) -> list[dict]:
         logger.error("❌ Pool de PostgreSQL no inicializado: catálogo vacío.")
         return []
 
-    # Solo se interpolan números de parámetro ($n), nunca datos.
-    condiciones = [
-        f"(p.name ILIKE ${i} ESCAPE '\\' OR p.brand ILIKE ${i} ESCAPE '\\')"
+    # Solo se interpolan números de parámetro ($n), nunca datos. Cada token
+    # suma 0 o 1 aunque coincida en nombre y marca.
+    puntos = [
+        f"(CASE WHEN p.name ILIKE ${i} ESCAPE '\\' OR p.brand ILIKE ${i} ESCAPE '\\' "
+        f"THEN 1 ELSE 0 END)"
         for i in range(1, len(tokens) + 1)
     ]
     sql = f"""
-    SELECT p.id, p.name, p.brand, p.price, p.currency, p.url, p.store_domain AS store
-    FROM products p
-    JOIN allowed_stores s ON s.domain = p.store_domain
-    WHERE p.is_active = TRUE AND s.is_active = TRUE
-      AND {" AND ".join(condiciones)}
-    ORDER BY p.price ASC, p.id
+    SELECT id, name, brand, price, currency, url, store, puntaje
+    FROM (
+        SELECT p.id, p.name, p.brand, p.price, p.currency, p.url,
+               p.store_domain AS store,
+               ({" + ".join(puntos)}) AS puntaje
+        FROM products p
+        JOIN allowed_stores s ON s.domain = p.store_domain
+        WHERE p.is_active = TRUE AND s.is_active = TRUE
+    ) AS candidatos
+    WHERE puntaje >= 1
+    ORDER BY puntaje DESC, price ASC, id
     LIMIT ${len(tokens) + 1};
     """
     parametros = [f"%{_escapar_like(t)}%" for t in tokens] + [limite]

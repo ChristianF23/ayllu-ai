@@ -84,7 +84,8 @@ ESQUEMA_HERRAMIENTAS = [
         "function": {
             "name": "buscar_productos",
             "description": (
-                "Busca productos en el catálogo propio de Ayllu (solo lectura). "
+                "Busca productos en el catálogo propio de Ayllu (solo lectura) por palabras "
+                "clave en nombre o marca; ordena primero los que coinciden con más palabras. "
                 "Devuelve hasta 5 productos con nombre, marca, precio, moneda, tienda y enlace."
             ),
             "parameters": {
@@ -94,7 +95,10 @@ ESQUEMA_HERRAMIENTAS = [
                         "type": "string",
                         "minLength": 1,
                         "maxLength": 100,
-                        "description": "Texto a buscar en nombre o marca, p. ej. 'comida gato adulto'.",
+                        "description": (
+                            "Pocas palabras clave cortas (tipo de producto o marca), sin frases "
+                            "completas, p. ej. 'digestivo gato ECOCAT'."
+                        ),
                     }
                 },
                 "required": ["consulta"],
