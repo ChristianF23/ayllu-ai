@@ -83,7 +83,7 @@ def _kwargs(**cambios):
     return base
 
 
-INVISIBLES = ["​", "‮", "\U000E0041", "﻿", "­"]
+INVISIBLES = ["\u200b", "\u202e", "\U000E0041", "\ufeff", "\u00ad"]
 
 
 @pytest.mark.parametrize("cambios", [
@@ -150,7 +150,7 @@ async def test_add_product_rechaza_unicode_invisible(monkeypatch, campo, invisib
         await add_product(**_kwargs(**{campo: valor[:mitad] + invisible + valor[mitad:]}))
 
 
-@pytest.mark.parametrize("separador", [" ", " "])
+@pytest.mark.parametrize("separador", ["\u2028", "\u2029"])
 async def test_add_product_rechaza_separadores_de_linea_unicode(monkeypatch, separador):
     monkeypatch.setattr(database, "DB_POOL", _PoolIntocable())
     with pytest.raises(ValueError):
@@ -440,7 +440,7 @@ async def test_search_placeholders_coinciden_con_parametros(monkeypatch, query, 
     assert "ESCAPE '\\\\'" not in sql
 
 
-@pytest.mark.parametrize("invisible", INVISIBLES + [" ", " "])
+@pytest.mark.parametrize("invisible", INVISIBLES + ["\u2028", "\u2029"])
 async def test_search_query_con_unicode_invisible_lanza(monkeypatch, invisible):
     monkeypatch.setattr(database, "DB_POOL", _PoolIntocable())
     with pytest.raises(ValueError):
@@ -473,8 +473,8 @@ async def test_search_descarta_url_fuera_de_la_tienda(monkeypatch, caplog):
 async def test_search_descarta_nombre_o_marca_con_invisibles(monkeypatch, caplog):
     filas = [
         _fila(1, URL_OK),
-        {**_fila(2, URL_OK), "name": "Comida‮gato"},
-        {**_fila(3, URL_OK), "brand": "Mar​ca"},
+        {**_fila(2, URL_OK), "name": "Comida\u202egato"},
+        {**_fila(3, URL_OK), "brand": "Mar\u200bca"},
         {**_fila(4, URL_OK), "name": "Comida\ngato"},
         {**_fila(5, URL_OK), "brand": None},
     ]
@@ -483,7 +483,7 @@ async def test_search_descarta_nombre_o_marca_con_invisibles(monkeypatch, caplog
         resultado = await search_products("gato")
     assert [r["id"] for r in resultado] == [1, 5]
     assert sum(r.levelname == "WARNING" for r in caplog.records) == 3
-    assert "‮" not in caplog.text
+    assert "\u202e" not in caplog.text
 
 
 # --- tokens significativos y puntaje ---
