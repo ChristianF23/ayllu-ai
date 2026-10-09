@@ -46,7 +46,8 @@ async def init_db_pool():
 
 async def _create_tables(conn: asyncpg.Connection):
     """
-    Crea las tablas 'users_whitelist', 'cost_logs' y 'allowed_stores' si no existen.
+    Crea las tablas 'users_whitelist', 'cost_logs', 'allowed_stores' y
+    'products' si no existen ('products' va después por su FK a allowed_stores).
     """
     ddl = """
     CREATE TABLE IF NOT EXISTS users_whitelist (
@@ -71,6 +72,18 @@ async def _create_tables(conn: asyncpg.Connection):
         domain VARCHAR(255) PRIMARY KEY,
         is_active BOOLEAN DEFAULT TRUE,
         created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS products (
+        id BIGSERIAL PRIMARY KEY,
+        name VARCHAR(200) NOT NULL,
+        brand VARCHAR(100),
+        price NUMERIC(12, 2) NOT NULL CHECK (price >= 0),
+        currency CHAR(3) NOT NULL DEFAULT 'COP',
+        url TEXT NOT NULL UNIQUE,
+        store_domain VARCHAR(255) NOT NULL REFERENCES allowed_stores(domain),
+        is_active BOOLEAN DEFAULT TRUE,
+        updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
     );
     """
     await conn.execute(ddl)
