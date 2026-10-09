@@ -5,7 +5,7 @@ import asyncpg
 import pytest
 
 import utils.database as database
-from utils.catalog import add_product, deactivate_product, search_products
+from utils.catalog import add_product, deactivate_product, listar_productos, search_products
 from utils.database import close_db_pool, init_db_pool
 
 TIENDA = "catalogo-prueba-ayllu.com.co"
@@ -166,6 +166,26 @@ async def test_add_product_tienda_inexistente_falla(pool):
             "SELECT COUNT(*) FROM products WHERE store_domain = $1;", TIENDA_INEXISTENTE
         )
     assert total == 0
+
+
+@pytest.mark.db
+async def test_listar_productos_incluye_inactivos_y_tienda_inactiva(pool):
+    activo = await _agregar("Comida gato", Decimal("44650.50"), "l1")
+    inactivo = await _agregar("Arena gato", 1000, "l2")
+    await deactivate_product(inactivo)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE allowed_stores SET is_active = FALSE WHERE domain = $1;", TIENDA
+        )
+
+    todos = {p["id"]: p for p in await listar_productos() if p["store"] == TIENDA}
+    assert set(todos) == {activo, inactivo}
+    assert todos[activo]["is_active"] is True and todos[inactivo]["is_active"] is False
+    assert todos[activo]["price"] == Decimal("44650.50")
+    assert todos[activo]["brand"] == MARCA
+
+    solo_activos = {p["id"] for p in await listar_productos(incluir_inactivos=False)}
+    assert activo in solo_activos and inactivo not in solo_activos
 
 
 @pytest.mark.db

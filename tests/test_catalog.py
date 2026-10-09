@@ -272,6 +272,55 @@ async def test_deactivate_product_sin_pool_runtime_error(monkeypatch):
         await catalog.deactivate_product(1)
 
 
+# --- listar_productos / listar_tiendas (solo lectura) ---
+
+def _fila_listado(id_, activo=True):
+    return {**_fila(id_, URL_OK, price=Decimal("44650.50")), "is_active": activo}
+
+
+@pytest.mark.parametrize("incluir", [True, False])
+async def test_listar_productos_sql_parametrizado(monkeypatch, incluir):
+    pool = _PoolFalso([_fila_listado(1), _fila_listado(2, activo=False)])
+    monkeypatch.setattr(database, "DB_POOL", pool)
+    resultado = await catalog.listar_productos(incluir_inactivos=incluir)
+    (sql, args), = pool.conn.llamadas
+    assert args == (incluir,)
+    assert "$1" in sql and "SELECT" in sql.upper()
+    for palabra in ("INSERT", "UPDATE", "DELETE"):
+        assert palabra not in sql.upper()
+    assert resultado[0] == {"id": 1, "name": "Comida gato", "brand": "Marca",
+                            "price": Decimal("44650.50"), "currency": "COP",
+                            "url": URL_OK, "store": TIENDA, "is_active": True}
+    assert resultado[1]["is_active"] is False
+
+
+async def test_listar_productos_sin_pool_falla_cerrado(monkeypatch, caplog):
+    monkeypatch.setattr(database, "DB_POOL", None)
+    with caplog.at_level("ERROR", logger="AylluCatalog"):
+        assert await catalog.listar_productos() == []
+    assert any(r.levelname == "ERROR" for r in caplog.records)
+
+
+async def test_listar_productos_bd_caida_falla_cerrado(monkeypatch):
+    monkeypatch.setattr(database, "DB_POOL", _PoolQueFalla())
+    assert await catalog.listar_productos() == []
+
+
+async def test_listar_tiendas(monkeypatch):
+    pool = _PoolFalso([{"domain": TIENDA, "is_active": True},
+                       {"domain": "vieja.com.co", "is_active": False}])
+    monkeypatch.setattr(database, "DB_POOL", pool)
+    assert await catalog.listar_tiendas() == [
+        {"domain": TIENDA, "is_active": True}, {"domain": "vieja.com.co", "is_active": False}]
+
+
+async def test_listar_tiendas_falla_cerrado(monkeypatch):
+    monkeypatch.setattr(database, "DB_POOL", None)
+    assert await catalog.listar_tiendas() == []
+    monkeypatch.setattr(database, "DB_POOL", _PoolQueFalla())
+    assert await catalog.listar_tiendas() == []
+
+
 # --- _escapar_like ---
 
 @pytest.mark.parametrize("entrada,esperado", [
