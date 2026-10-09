@@ -374,3 +374,19 @@ async def test_search_descarta_url_fuera_de_la_tienda(monkeypatch, caplog):
         resultado = await search_products("gato")
     assert [r["id"] for r in resultado] == [1]
     assert sum(r.levelname == "WARNING" for r in caplog.records) == 3
+
+
+async def test_search_descarta_nombre_o_marca_con_invisibles(monkeypatch, caplog):
+    filas = [
+        _fila(1, URL_OK),
+        {**_fila(2, URL_OK), "name": "Comida‮gato"},
+        {**_fila(3, URL_OK), "brand": "Mar​ca"},
+        {**_fila(4, URL_OK), "name": "Comida\ngato"},
+        {**_fila(5, URL_OK), "brand": None},
+    ]
+    monkeypatch.setattr(database, "DB_POOL", _PoolFalso(filas))
+    with caplog.at_level("WARNING", logger="AylluCatalog"):
+        resultado = await search_products("gato")
+    assert [r["id"] for r in resultado] == [1, 5]
+    assert sum(r.levelname == "WARNING" for r in caplog.records) == 3
+    assert "‮" not in caplog.text
