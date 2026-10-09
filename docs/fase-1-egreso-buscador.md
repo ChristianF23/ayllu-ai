@@ -1,6 +1,10 @@
 # Fase 1: egreso del buscador de tiendas (diseño)
 
-Estado: propuesta, sin implementar. Base: `docker-compose.yml`, `Dockerfile.sandbox`, `sandbox_server/server.py`, `utils/sandbox_client.py`, `agents/orchestrator.py`, `bot/main.py`, y la tabla `allowed_stores` + `utils/domain_allowlist.py` de la tarea hermana (todavía sin commit: si cambian, revisar §2 y §5). **[verificar]** = depende de Docker y no se probó; se confirma con `docker compose config` y la prueba real del final.
+> **Nota de estado:** la Fase 1 se resolvió con un catálogo propio en PostgreSQL (`products`), no con búsqueda en internet.
+> Este diseño queda como referencia para cuando se retome la búsqueda con internet; el proxy de salida se decide antes de la Fase 3.
+> `allowed_stores` y `utils/domain_allowlist.py` ya están commiteados.
+
+Estado: propuesta, sin implementar. Base: `docker-compose.yml`, `Dockerfile.sandbox`, `sandbox_server/server.py`, `utils/sandbox_client.py`, `agents/orchestrator.py`, `bot/main.py`, y la tabla `allowed_stores` + `utils/domain_allowlist.py` (ya commiteados en la rama `fase-1-busqueda`; si cambian, revisar §2 y §5). **[verificar]** = depende de Docker y no se probó; se confirma con `docker compose config` y la prueba real del final.
 
 **En una línea:** contenedor `search` con dos redes (una `internal` compartida solo con `app` y una bridge propia para salir), sin credenciales de BD. En cada petición el bot le pasa la lista activa de `allowed_stores`, y el servicio solo busca en tiendas que también tengan adaptador en código.
 
