@@ -12,6 +12,8 @@ Bot de Telegram que enruta mensajes a un agente orquestador (LiteLLM, `gpt-4o-mi
 - `utils/database.py`: pool asyncpg, tablas `users_whitelist`, `cost_logs`, `allowed_stores` (semilla `mercadolibre.com.co`) y `products`.
 - `utils/domain_allowlist.py`: normaliza dominios y verifica URLs (https, host en la lista); falla cerrado.
 - `utils/catalog.py`: catálogo propio; `search_products` es de solo lectura, `add_product`/`deactivate_product` son solo del usuario (aún sin llamador ni comando de Telegram).
+- `utils/pets.py`: mascotas (`pets`) y vínculo explícito mascota-producto (`pet_products`); `products_for_pet` es de solo lectura, `add_pet`/`link_product`/`unlink_product` son solo del usuario (vía `scripts/cargar_producto.py`).
+- Herramienta `productos_de_mascota` en el orquestador: solo lectura; resuelve en código qué productos tiene vinculados una mascota ("comida para Milu"). Comparte los límites de `buscar_productos`.
 - Herramienta `buscar_productos` en el orquestador: tool calling de solo lectura con límites en código (3 rondas, 3 ejecuciones, 5 resultados); se suma el costo de todas las llamadas y el bot registra el costo parcial si el LLM falla a mitad.
 - `utils/okf_reader.py` y `knowledge/`: conceptos en Markdown con frontmatter YAML que se inyectan al prompt del sistema.
 - `runbooks/`: acciones pre-aprobadas y seguras (ej. `db_inspector`).
@@ -23,7 +25,7 @@ Bot de Telegram que enruta mensajes a un agente orquestador (LiteLLM, `gpt-4o-mi
 2. **Nada de gasto de dinero sin aprobación humana explícita** en Telegram. Los límites (tope por orden, tope mensual, dominios permitidos) se aplican en código, no en el prompt.
 3. El LLM nunca recibe datos de tarjetas ni contraseñas.
 4. No ejecutar `git push`, `docker compose down -v` ni borrar volúmenes sin pedir permiso.
-5. `add_product`/`deactivate_product` y la lista de tiendas nunca se exponen como herramienta al LLM.
+5. `add_product`/`deactivate_product`, `add_pet`/`link_product`/`unlink_product` y la lista de tiendas nunca se exponen como herramienta al LLM.
 
 ## Convenciones
 
