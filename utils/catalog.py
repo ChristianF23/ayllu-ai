@@ -172,6 +172,63 @@ async def deactivate_product(product_id: int) -> bool:
     return afectado
 
 
+async def listar_productos(incluir_inactivos: bool = True) -> list[dict]:
+    """
+    Lista los productos del catálogo (solo lectura), ordenados por id, para
+    la herramienta de carga del usuario (scripts/cargar_producto.py).
+    Falla cerrado: sin pool o ante error de BD devuelve [].
+    No filtra por tienda activa: muestra lo que hay guardado.
+    """
+    if not database.DB_POOL:
+        logger.error("❌ Pool de PostgreSQL no inicializado: no se puede listar el catálogo.")
+        return []
+
+    query = """
+    SELECT id, name, brand, price, currency, url, store_domain AS store, is_active
+    FROM products
+    WHERE is_active = TRUE OR $1::boolean
+    ORDER BY id;
+    """
+    try:
+        async with database.DB_POOL.acquire() as conn:
+            filas = await conn.fetch(query, bool(incluir_inactivos))
+        return [
+            {
+                "id": fila["id"],
+                "name": fila["name"],
+                "brand": fila["brand"],
+                "price": fila["price"],
+                "currency": fila["currency"],
+                "url": fila["url"],
+                "store": fila["store"],
+                "is_active": bool(fila["is_active"]),
+            }
+            for fila in filas
+        ]
+    except Exception as e:
+        logger.error(f"❌ Error al listar el catálogo, sin resultados: {str(e)}")
+        return []
+
+
+async def listar_tiendas() -> list[dict]:
+    """
+    Lista todas las tiendas (activas e inactivas) ordenadas por dominio, solo
+    lectura. Falla cerrado: sin pool o ante error de BD devuelve [].
+    """
+    if not database.DB_POOL:
+        logger.error("❌ Pool de PostgreSQL no inicializado: no se pueden listar tiendas.")
+        return []
+
+    query = "SELECT domain, is_active FROM allowed_stores ORDER BY domain;"
+    try:
+        async with database.DB_POOL.acquire() as conn:
+            filas = await conn.fetch(query)
+        return [{"domain": f["domain"], "is_active": bool(f["is_active"])} for f in filas]
+    except Exception as e:
+        logger.error(f"❌ Error al listar tiendas, sin resultados: {str(e)}")
+        return []
+
+
 async def search_products(query: str, max_results: int = 5) -> list[dict]:
     """
     Busca productos activos de tiendas activas cuyo nombre o marca contengan
