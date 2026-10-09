@@ -278,3 +278,56 @@ async def test_check_precio_no_negativo(pool):
                 "INSERT INTO products (name, price, url, store_domain) VALUES ($1, $2, $3, $4);",
                 "Directo", Decimal("-1"), _url(TIENDA, "neg"), TIENDA,
             )
+
+
+# --- descripción ---
+
+@pytest.mark.db
+async def test_columna_description_existe_y_admite_null(pool):
+    async with pool.acquire() as conn:
+        fila = await conn.fetchrow(
+            "SELECT data_type, character_maximum_length, is_nullable "
+            "FROM information_schema.columns "
+            "WHERE table_name = 'products' AND column_name = 'description';"
+        )
+        # Re-ejecutar el DDL (incluido el ALTER ... IF NOT EXISTS) es idempotente.
+        await database._create_tables(conn)
+    assert fila is not None
+    assert fila["data_type"] == "character varying"
+    assert fila["character_maximum_length"] == 300
+    assert fila["is_nullable"] == "YES"
+    pid = await _agregar("Sin descripción", 1000, "null")
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT description FROM products WHERE id = $1;", pid) is None
+
+
+@pytest.mark.db
+async def test_busqueda_coincide_solo_por_descripcion(pool):
+    pid = await add_product("Alimento seco", "Otra", 1000, _url(TIENDA, "desc"), TIENDA,
+                            description="Fórmula Zqxdescripcion para digestión sensible")
+    resultado = await _buscar("zqxdescripcion")
+    assert [r["id"] for r in resultado] == [pid]
+    assert resultado[0]["description"] == "Fórmula Zqxdescripcion para digestión sensible"
+
+
+@pytest.mark.db
+async def test_reagregar_sin_descripcion_conserva_y_con_nueva_reemplaza(pool):
+    url = _url(TIENDA, "coalesce")
+    pid = await add_product("Alimento", MARCA, 1000, url, TIENDA, description="Primera")
+    await add_product("Alimento", MARCA, 2000, url, TIENDA)
+    async with pool.acquire() as conn:
+        fila = await conn.fetchrow("SELECT description, price FROM products WHERE id = $1;", pid)
+    assert fila["description"] == "Primera" and fila["price"] == Decimal("2000")
+
+    await add_product("Alimento", MARCA, 2000, url, TIENDA, description="Segunda")
+    async with pool.acquire() as conn:
+        desc = await conn.fetchval("SELECT description FROM products WHERE id = $1;", pid)
+    assert desc == "Segunda"
+
+
+@pytest.mark.db
+async def test_listar_productos_incluye_descripcion(pool):
+    pid = await add_product("Alimento", MARCA, 1000, _url(TIENDA, "lst"), TIENDA,
+                            description="Texto de prueba")
+    productos = {p["id"]: p for p in await listar_productos()}
+    assert productos[pid]["description"] == "Texto de prueba"

@@ -23,6 +23,7 @@ logger = logging.getLogger("AylluCatalog")
 
 _MAX_NOMBRE = 200
 _MAX_MARCA = 100
+_MAX_DESCRIPCION = 300
 _MAX_QUERY = 100
 _MAX_TOKENS = 6
 _MAX_RESULTADOS = 10
@@ -85,11 +86,13 @@ def _escapar_like(token: str) -> str:
     return token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-async def add_product(name, brand, price, url, store_domain, currency="COP") -> int:
+async def add_product(name, brand, price, url, store_domain, currency="COP",
+                      description=None) -> int:
     """
     Valida en código e inserta (o actualiza por url) un producto del catálogo.
     Devuelve su id. Lanza ValueError si algún dato es inválido o si la tienda
-    no existe o está inactiva; RuntimeError si no hay pool.
+    no existe o está inactiva; RuntimeError si no hay pool. La descripción
+    es opcional; reagregar una url sin descripción conserva la anterior.
 
     ADVERTENCIA: cambia lo que el agente puede ofrecer al usuario. NUNCA debe
     exponerse como herramienta al LLM. Antes de conectarla a un handler de
@@ -97,6 +100,8 @@ async def add_product(name, brand, price, url, store_domain, currency="COP") -> 
     """
     nombre = _validar_texto(name, "El nombre", _MAX_NOMBRE)
     marca = None if brand is None else _validar_texto(brand, "La marca", _MAX_MARCA)
+    descripcion = (None if description is None
+                   else _validar_texto(description, "La descripción", _MAX_DESCRIPCION))
     precio = _validar_precio(price)
     if not isinstance(currency, str) or not _MONEDA.fullmatch(currency):
         raise ValueError(f"Moneda inválida: {currency!r} (3 letras mayúsculas).")
@@ -121,14 +126,16 @@ async def add_product(name, brand, price, url, store_domain, currency="COP") -> 
     FOR SHARE;
     """
     upsert_query = """
-    INSERT INTO products (name, brand, price, currency, url, store_domain, is_active, updated_at)
-    VALUES ($1, $2, $3, $4, $5, $6, TRUE, CURRENT_TIMESTAMP)
+    INSERT INTO products (name, brand, price, currency, url, store_domain, description,
+                          is_active, updated_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, CURRENT_TIMESTAMP)
     ON CONFLICT (url) DO UPDATE SET
         name = EXCLUDED.name,
         brand = EXCLUDED.brand,
         price = EXCLUDED.price,
         currency = EXCLUDED.currency,
         store_domain = EXCLUDED.store_domain,
+        description = COALESCE(EXCLUDED.description, products.description),
         is_active = TRUE,
         updated_at = CURRENT_TIMESTAMP
     RETURNING id;
@@ -139,7 +146,7 @@ async def add_product(name, brand, price, url, store_domain, currency="COP") -> 
             if not activa:
                 raise ValueError(f"La tienda {tienda} no existe o está inactiva.")
             product_id = await conn.fetchval(
-                upsert_query, nombre, marca, precio, currency, url, tienda
+                upsert_query, nombre, marca, precio, currency, url, tienda, descripcion
             )
 
     logger.info(f"✓ Producto {product_id} guardado en el catálogo ({tienda}).")
@@ -184,7 +191,7 @@ async def listar_productos(incluir_inactivos: bool = True) -> list[dict]:
         return []
 
     query = """
-    SELECT id, name, brand, price, currency, url, store_domain AS store, is_active
+    SELECT id, name, brand, description, price, currency, url, store_domain AS store, is_active
     FROM products
     WHERE is_active = TRUE OR $1::boolean
     ORDER BY id;
@@ -197,6 +204,7 @@ async def listar_productos(incluir_inactivos: bool = True) -> list[dict]:
                 "id": fila["id"],
                 "name": fila["name"],
                 "brand": fila["brand"],
+                "description": fila["description"],
                 "price": fila["price"],
                 "currency": fila["currency"],
                 "url": fila["url"],
@@ -240,6 +248,9 @@ _STOPWORDS = frozenset({
     "quiero", "necesito", "busca", "buscar", "dame", "precio", "cuanto", "cuánto",
     "cuesta", "enlace", "link",
 })
+# Signos que se quitan al inicio y al final de cada token (no en medio:
+# "100%" o "a_b" se conservan).
+_PUNTUACION_BORDES = "¿?¡!.,;:()\"'«»…"
 # Longitud mínima de un token DESPUÉS de normalizar.
 _MIN_TOKEN = 3
 _NUMERICO = re.compile(r"[\d.,]+")
@@ -263,13 +274,15 @@ def _normalizar_token(token: str) -> str:
 
 def _tokens_significativos(texto: str) -> list[str]:
     """
-    Minúsculas, sin stopwords ni números, normalizados, de al menos 3
+    Minúsculas, sin signos de puntuación en los bordes, sin stopwords ni
+    números, normalizados, de al menos 3
     caracteres tras normalizar y sin duplicados (en orden), con un máximo de
     6. Lanza ValueError si no queda ninguno.
     """
     tokens = []
-    for crudo in texto.lower().split():
-        if crudo in _STOPWORDS or _NUMERICO.fullmatch(crudo):
+    for palabra in texto.lower().split():
+        crudo = palabra.strip(_PUNTUACION_BORDES)
+        if not crudo or crudo in _STOPWORDS or _NUMERICO.fullmatch(crudo):
             continue
         token = _normalizar_token(crudo)
         if len(token) < _MIN_TOKEN or token in _STOPWORDS:
@@ -293,7 +306,7 @@ async def search_products(query: str, max_results: int = 5) -> list[dict]:
     """
     Busca productos activos de tiendas activas por palabras clave. Cada token
     significativo (sin stopwords, normalizado) suma 1 punto si aparece en el
-    nombre o en la marca (sin distinguir mayúsculas). Solo se devuelven los
+    nombre, la marca o la descripción (sin distinguir mayúsculas). Solo se devuelven los
     productos con el puntaje mínimo (_puntaje_minimo: 1 con 1-2 tokens, la
     mitad redondeada hacia arriba con 3 o más), ordenados por puntaje (desc), precio (asc)
     e id. Lanza ValueError si la consulta es inválida o no tiene palabras
@@ -319,13 +332,14 @@ async def search_products(query: str, max_results: int = 5) -> list[dict]:
     # suma 0 o 1 aunque coincida en nombre y marca.
     puntos = [
         f"(CASE WHEN p.name ILIKE ${i} ESCAPE '\\' OR p.brand ILIKE ${i} ESCAPE '\\' "
+        f"OR p.description ILIKE ${i} ESCAPE '\\' "
         f"THEN 1 ELSE 0 END)"
         for i in range(1, len(tokens) + 1)
     ]
     sql = f"""
-    SELECT id, name, brand, price, currency, url, store, puntaje
+    SELECT id, name, brand, description, price, currency, url, store, puntaje
     FROM (
-        SELECT p.id, p.name, p.brand, p.price, p.currency, p.url,
+        SELECT p.id, p.name, p.brand, p.description, p.price, p.currency, p.url,
                p.store_domain AS store,
                ({" + ".join(puntos)}) AS puntaje
         FROM products p
@@ -351,7 +365,7 @@ async def search_products(query: str, max_results: int = 5) -> list[dict]:
                 continue
             # Defensa en profundidad: solo control/invisibles (no longitud ni vacío).
             try:
-                for campo in ("name", "brand"):
+                for campo in ("name", "brand", "description"):
                     if fila[campo] is not None:
                         _rechazar_invisibles(str(fila[campo]), campo)
             except ValueError:
@@ -363,6 +377,7 @@ async def search_products(query: str, max_results: int = 5) -> list[dict]:
                 "id": fila["id"],
                 "name": fila["name"],
                 "brand": fila["brand"],
+                "description": fila["description"],
                 "price": float(fila["price"]),
                 "currency": fila["currency"],
                 "url": fila["url"],

@@ -82,9 +82,13 @@ async def _create_tables(conn: asyncpg.Connection):
         currency CHAR(3) NOT NULL DEFAULT 'COP',
         url TEXT NOT NULL UNIQUE,
         store_domain VARCHAR(255) NOT NULL REFERENCES allowed_stores(domain),
+        description VARCHAR(300),
         is_active BOOLEAN DEFAULT TRUE,
         updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
     );
+
+    -- Migración idempotente para instalaciones previas a la columna.
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS description VARCHAR(300);
     """
     await conn.execute(ddl)
 

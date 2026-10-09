@@ -16,6 +16,7 @@ MAX_RESULTADOS_BUSQUEDA = 5
 RESPUESTA_VACIA = "No pude generar una respuesta. ¿Puedes reformular tu mensaje?"
 _MAX_NOMBRE_RESULTADO = 120
 _MAX_MARCA_RESULTADO = 60
+_MAX_DESCRIPCION_RESULTADO = 200
 
 
 def _json_compacto(datos) -> str:
@@ -63,10 +64,13 @@ async def _herramienta_buscar_productos(argumentos: str) -> str:
     for p in productos:
         nombre = p.get("name")
         marca = p.get("brand")
+        descripcion = p.get("description")
         resultados.append({
             "id": p.get("id"),
             "nombre": nombre[:_MAX_NOMBRE_RESULTADO] if isinstance(nombre, str) else nombre,
             "marca": marca[:_MAX_MARCA_RESULTADO] if isinstance(marca, str) else marca,
+            "descripcion": (descripcion[:_MAX_DESCRIPCION_RESULTADO]
+                            if isinstance(descripcion, str) else descripcion),
             "precio": p.get("price"),
             "moneda": p.get("currency"),
             "tienda": p.get("store"),
@@ -85,8 +89,8 @@ ESQUEMA_HERRAMIENTAS = [
             "name": "buscar_productos",
             "description": (
                 "Busca productos en el catálogo propio de Ayllu (solo lectura) por palabras "
-                "clave en nombre o marca; ordena primero los que coinciden con más palabras. "
-                "Devuelve hasta 5 productos con nombre, marca, precio, moneda, tienda y enlace."
+                "clave en nombre, marca y descripción; ordena primero los que coinciden con más palabras. "
+                "Devuelve hasta 5 productos con nombre, marca, descripción, precio, moneda, tienda y enlace."
             ),
             "parameters": {
                 "type": "object",

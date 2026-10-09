@@ -30,7 +30,8 @@ def tc(id_, nombre="buscar_productos", args=None):
 
 
 PRODUCTO = {
-    "id": 7, "name": "Alimento Gato Adulto 1kg", "brand": "Felino", "price": 12345.5,
+    "id": 7, "name": "Alimento Gato Adulto 1kg", "brand": "Felino",
+    "description": "Croquetas para gato adulto.", "price": 12345.5,
     "currency": "COP", "url": "https://tienda.example/p/7", "store": "tienda.example",
 }
 
@@ -102,10 +103,12 @@ async def test_tool_call_valida(monkeypatch, agente, buscador):
     assert any(m["role"] == "assistant" and m.get("tool_calls") for m in segunda["messages"])
     contenido = json.loads(msgs_tool[0]["content"])
     assert contenido == {"resultados": [{
-        "id": 7, "nombre": "Alimento Gato Adulto 1kg", "marca": "Felino", "precio": 12345.5,
+        "id": 7, "nombre": "Alimento Gato Adulto 1kg", "marca": "Felino",
+        "descripcion": "Croquetas para gato adulto.", "precio": 12345.5,
         "moneda": "COP", "tienda": "tienda.example", "url": "https://tienda.example/p/7",
     }]}
-    assert set(contenido["resultados"][0]) == {"id", "nombre", "marca", "precio", "moneda", "tienda", "url"}
+    assert set(contenido["resultados"][0]) == {"id", "nombre", "marca", "descripcion", "precio",
+                                               "moneda", "tienda", "url"}
 
 
 async def test_usage_y_costo_sumados_en_dos_llamadas(monkeypatch, agente, buscador):
@@ -291,7 +294,8 @@ async def test_rutas_runbook_y_sandbox_no_llaman_al_llm(monkeypatch, agente):
 
 async def test_precio_y_textos_recortados(monkeypatch, agente):
     async def largo(query, max_results=5):
-        return [{**PRODUCTO, "name": "N" * 300, "brand": "M" * 200, "price": 9.99}]
+        return [{**PRODUCTO, "name": "N" * 300, "brand": "M" * 200, "description": "D" * 300,
+                 "price": 9.99}]
 
     monkeypatch.setattr(orq, "search_products", largo)
     guion = instalar(monkeypatch, [FakeResponse(tool_calls=[tc("c")]), FakeResponse("ok")])
@@ -300,6 +304,23 @@ async def test_precio_y_textos_recortados(monkeypatch, agente):
     assert item["precio"] == 9.99
     assert len(item["nombre"]) == 120
     assert len(item["marca"]) == 60
+    assert item["descripcion"] == "D" * 200
+
+
+async def test_descripcion_none_se_envia_como_null(monkeypatch, agente):
+    async def sin_desc(query, max_results=5):
+        return [{**PRODUCTO, "description": None}]
+
+    monkeypatch.setattr(orq, "search_products", sin_desc)
+    guion = instalar(monkeypatch, [FakeResponse(tool_calls=[tc("c")]), FakeResponse("ok")])
+    await agente.process_request("busca")
+    item = json.loads(mensajes_tool(guion.llamadas[1])[0]["content"])["resultados"][0]
+    assert "descripcion" in item and item["descripcion"] is None
+
+
+def test_esquema_menciona_descripcion():
+    texto = orq.ESQUEMA_HERRAMIENTAS[0]["function"]["description"]
+    assert "descripción" in texto
 
 
 async def test_error_del_llm_en_llamada_intermedia(monkeypatch, agente, buscador, caplog):

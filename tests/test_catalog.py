@@ -70,8 +70,8 @@ class _PoolFalso:
 
 
 def _fila(id_, url, store=TIENDA, price=Decimal("10000.00")):
-    return {"id": id_, "name": "Comida gato", "brand": "Marca", "price": price,
-            "currency": "COP", "url": url, "store": store}
+    return {"id": id_, "name": "Comida gato", "brand": "Marca", "description": None,
+            "price": price, "currency": "COP", "url": url, "store": store}
 
 
 # --- add_product: validaciones antes de tocar la BD ---
@@ -262,7 +262,44 @@ async def test_add_product_camino_feliz(monkeypatch):
     assert "allowed_stores" in sql_tienda and args_tienda == (TIENDA,)
     assert "INSERT INTO products" in sql_upsert
     assert "store_domain = EXCLUDED.store_domain" in sql_upsert
-    assert args_upsert == ("Comida gato 3kg", "Marca", Decimal("85000.50"), "COP", URL_OK, TIENDA)
+    assert args_upsert == ("Comida gato 3kg", "Marca", Decimal("85000.50"), "COP", URL_OK, TIENDA,
+                           None)
+    assert ("description = COALESCE(EXCLUDED.description, products.description)"
+            in " ".join(sql_upsert.split()))
+
+
+async def test_add_product_con_descripcion_la_pasa_al_upsert(monkeypatch):
+    conn = _ConexionEscritura(tienda_activa=True, id_devuelto=8)
+    monkeypatch.setattr(database, "DB_POOL", _PoolEscritura(conn))
+    assert await add_product(**_kwargs(), description="  Para gatos con digestión sensible. ") == 8
+    _, (_, args_upsert) = conn.fetchval_llamadas
+    assert args_upsert[-1] == "Para gatos con digestión sensible."
+
+
+async def test_add_product_descripcion_es_parametro_opcional_final(monkeypatch):
+    # Llamadores posicionales antiguos (sin descripción) siguen funcionando.
+    conn = _ConexionEscritura(tienda_activa=True)
+    monkeypatch.setattr(database, "DB_POOL", _PoolEscritura(conn))
+    await add_product("Comida", "Marca", 1000, URL_OK, TIENDA, "COP")
+    _, (_, args_upsert) = conn.fetchval_llamadas
+    assert args_upsert[-1] is None
+
+
+@pytest.mark.parametrize("descripcion", [
+    "", "   ", "d" * 301, "linea1\nlinea2", "tab\tx", 123, ["x"],
+    *[f"desc{c}ripcion" for c in INVISIBLES], "a\u2028b", "a\u2029b",
+])
+async def test_add_product_descripcion_invalida_lanza_antes_de_tocar_bd(monkeypatch, descripcion):
+    monkeypatch.setattr(database, "DB_POOL", _PoolIntocable())
+    with pytest.raises(ValueError):
+        await add_product(**_kwargs(), description=descripcion)
+
+
+@pytest.mark.parametrize("descripcion", [None, "d", "d" * 300, "  " + "d" * 300 + "  "])
+async def test_add_product_descripcion_valida_pasa_validacion(monkeypatch, descripcion):
+    monkeypatch.setattr(database, "DB_POOL", None)
+    with pytest.raises(RuntimeError):
+        await add_product(**_kwargs(), description=descripcion)
 
 
 @pytest.mark.parametrize("estado,esperado", [("UPDATE 1", True), ("UPDATE 0", False)])
@@ -297,7 +334,7 @@ async def test_listar_productos_sql_parametrizado(monkeypatch, incluir):
     for palabra in ("INSERT", "UPDATE", "DELETE"):
         assert palabra not in sql.upper()
     assert resultado[0] == {"id": 1, "name": "Comida gato", "brand": "Marca",
-                            "price": Decimal("44650.50"), "currency": "COP",
+                            "description": None, "price": Decimal("44650.50"), "currency": "COP",
                             "url": URL_OK, "store": TIENDA, "is_active": True}
     assert resultado[1]["is_active"] is False
 
@@ -398,8 +435,8 @@ async def test_search_placeholders_coinciden_con_parametros(monkeypatch, query, 
     placeholders = set(re.findall(r"\$(\d+)", sql))
     assert placeholders == {str(i) for i in range(1, len(args) + 1)}
     assert len(args) == n_tokens + 1
-    # Cada token usa ESCAPE '\' exactamente (en name y en brand).
-    assert sql.count("ESCAPE '\\'") == 2 * n_tokens
+    # Cada token usa ESCAPE '\' exactamente (en name, brand y description).
+    assert sql.count("ESCAPE '\\'") == 3 * n_tokens
     assert "ESCAPE '\\\\'" not in sql
 
 
@@ -414,7 +451,7 @@ async def test_search_devuelve_dicts_con_precio_float(monkeypatch):
     monkeypatch.setattr(database, "DB_POOL", _PoolFalso([_fila(1, URL_OK)]))
     resultado = await search_products("gato")
     assert resultado == [{"id": 1, "name": "Comida gato", "brand": "Marca",
-                          "price": 10000.0, "currency": "COP", "url": URL_OK,
+                          "description": None, "price": 10000.0, "currency": "COP", "url": URL_OK,
                           "store": TIENDA}]
     assert isinstance(resultado[0]["price"], float)
 
@@ -514,9 +551,13 @@ async def test_search_sql_usa_puntaje(monkeypatch, query, n_tokens):
     # Sin AND entre tokens: solo se combinan con '+'.
     assert plano.count(" + ") == n_tokens - 1
     assert ") AND (" not in plano
-    # Cada $n de token aparece 2 veces (name y brand); el límite 1 vez.
+    # Cada $n de token aparece 3 veces (name, brand y description); el límite 1 vez.
     for i in range(1, n_tokens + 1):
-        assert len(re.findall(rf"\${i}(?!\d)", sql)) == 2
+        assert len(re.findall(rf"\${i}(?!\d)", sql)) == 3
+    # Cada token suma 1 si está en name OR brand OR description.
+    for i in range(1, n_tokens + 1):
+        assert (f"WHEN p.name ILIKE ${i} ESCAPE '\\' OR p.brand ILIKE ${i} ESCAPE '\\' "
+                f"OR p.description ILIKE ${i} ESCAPE '\\' THEN 1 ELSE 0 END") in plano
     assert len(re.findall(rf"\${n_tokens + 1}(?!\d)", sql)) == 1
     assert len(args) == n_tokens + 1
 
@@ -550,3 +591,39 @@ async def test_search_sql_minimo_por_numero_de_tokens(monkeypatch, query, n, min
     assert re.findall(r"WHERE puntaje >= (\S+)", plano) == [str(minimo)]
     assert plano.count("THEN 1 ELSE 0 END") == n
     assert len(args) == n + 1
+
+
+# --- descripción en la búsqueda y puntuación en tokens ---
+
+async def test_search_devuelve_descripcion(monkeypatch):
+    fila = {**_fila(1, URL_OK), "description": "Para gatos sensibles."}
+    monkeypatch.setattr(database, "DB_POOL", _PoolFalso([fila]))
+    (resultado,) = await search_products("gato")
+    assert resultado["description"] == "Para gatos sensibles."
+
+
+async def test_search_descarta_descripcion_con_invisibles(monkeypatch, caplog):
+    filas = [
+        {**_fila(1, URL_OK), "description": "Normal"},
+        {**_fila(2, URL_OK), "description": "Oculto\u202etexto"},
+        {**_fila(3, URL_OK), "description": "Salto\nde linea"},
+    ]
+    monkeypatch.setattr(database, "DB_POOL", _PoolFalso(filas))
+    with caplog.at_level("WARNING", logger="AylluCatalog"):
+        resultado = await search_products("gato")
+    assert [r["id"] for r in resultado] == [1]
+
+
+@pytest.mark.parametrize("texto,esperado", [
+    ("¿tienes comida digestiva?", ["comid", "digestiv"]),
+    ("¡Gatos! (arena), «premium»…", ["gat", "aren", "premium"]),
+    ('"croquetas"; ecocat: 100%.', ["croquet", "ecocat", "100%"]),
+    ("¿hay algo? ¿dame el link!", None),
+    ("a_b. ¿x?", ["a_b"]),
+])
+def test_tokens_quitan_puntuacion_de_los_bordes(texto, esperado):
+    if esperado is None:
+        with pytest.raises(ValueError, match="más específicas"):
+            _tokens_significativos(texto)
+    else:
+        assert _tokens_significativos(texto) == esperado
