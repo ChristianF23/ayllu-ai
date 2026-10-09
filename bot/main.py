@@ -109,6 +109,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await reply_safe(update.message, reply_message)
     else:
+        # Si hubo llamadas al LLM antes del fallo, el costo ya se incurrió: se registra.
+        usage_error = result.get("usage") or {}
+        if (usage_error.get("estimated_cost_usd") or 0) > 0 or (usage_error.get("total_tokens") or 0) > 0:
+            await log_cost(
+                user_id=user_id,
+                model_used=result.get("model_used") or "desconocido",
+                prompt_tokens=usage_error.get("prompt_tokens") or 0,
+                completion_tokens=usage_error.get("completion_tokens") or 0,
+                estimated_cost_usd=usage_error.get("estimated_cost_usd") or 0.0,
+                agent_id="orchestrator"
+            )
         error_msg = f"❌ Ocurrió un error al procesar tu mensaje: {result['message']}"
         await update.message.reply_text(error_msg)
 
