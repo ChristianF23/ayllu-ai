@@ -78,13 +78,15 @@ def parsear_precio(texto: str) -> Decimal:
 def prevalidar_agregar(args, precio: Decimal) -> str:
     """
     Repite en código, sin tocar la BD, las validaciones de catalog.add_product
-    (nombre, marca, precio, moneda, tienda y que la URL sea https de esa
+    (nombre, marca, descripción, precio, moneda, tienda y que la URL sea https de esa
     tienda). Así --crear-tienda no registra un dominio por un comando que
     luego fallaría. Devuelve la tienda normalizada; lanza ValueError.
     """
     catalog._validar_texto(args.nombre, "El nombre", catalog._MAX_NOMBRE)
     if args.marca is not None:
         catalog._validar_texto(args.marca, "La marca", catalog._MAX_MARCA)
+    if args.descripcion is not None:
+        catalog._validar_texto(args.descripcion, "La descripción", catalog._MAX_DESCRIPCION)
     catalog._validar_precio(precio)
     if not _MONEDA.fullmatch(args.moneda):
         raise ValueError(f"Moneda inválida: {args.moneda!r} (3 letras mayúsculas).")
@@ -122,6 +124,9 @@ def construir_parser() -> argparse.ArgumentParser:
     agregar.add_argument("--url", required=True)
     agregar.add_argument("--tienda", required=True, help="Dominio de la tienda.")
     agregar.add_argument("--moneda", default="COP")
+    agregar.add_argument("--descripcion", default=None,
+                         help="Descripción opcional (máx. 300 caracteres). Si se omite, "
+                              "se conserva la que ya tenga el producto.")
     agregar.add_argument("--crear-tienda", action="store_true",
                          help="Registra la tienda si no existe (no reactiva una inactiva).")
 
@@ -153,7 +158,8 @@ async def cmd_agregar(args) -> int:
             print(f"Tienda registrada o existente: {tienda_creada}")
         try:
             product_id = await catalog.add_product(
-                args.nombre, args.marca, precio, args.url, args.tienda, args.moneda
+                args.nombre, args.marca, precio, args.url, args.tienda, args.moneda,
+                description=args.descripcion,
             )
         except Exception:
             if tienda_creada:
@@ -166,6 +172,8 @@ async def cmd_agregar(args) -> int:
         print(f"Producto guardado con id {product_id}.")
         marca = f" ({args.marca})" if args.marca else ""
         print(f"  {args.nombre.strip()}{marca} - {formatear_precio(precio, args.moneda)}")
+        if args.descripcion:
+            print(f"  Descripción: {args.descripcion.strip()}")
         print(f"  Tienda: {args.tienda}  URL: {args.url}")
         return 0
     except ValueError as e:
@@ -197,6 +205,8 @@ async def cmd_listar(args) -> int:
             marca = p["brand"] or "-"
             print(f"  [{p['id']}] {p['name']} | {marca} | "
                   f"{formatear_precio(p['price'], p['currency'])} | {p['store']} | {estado}")
+            if p.get("description"):
+                print(f"      {p['description']}")
         print(f"Tiendas ({len(tiendas)}):")
         for t in tiendas:
             estado = "activa" if t["is_active"] else "inactiva"

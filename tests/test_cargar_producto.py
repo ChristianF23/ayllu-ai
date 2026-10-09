@@ -32,8 +32,8 @@ class _Falsos:
         self.llamadas.append(("add_allowed_store", dominio))
         return dominio
 
-    async def add_product(self, *args):
-        self.llamadas.append(("add_product", *args))
+    async def add_product(self, *args, **kwargs):
+        self.llamadas.append(("add_product", *args, kwargs))
         if isinstance(self._add_product, BaseException):
             raise self._add_product
         return 7
@@ -122,6 +122,7 @@ def test_parser_agregar():
 def test_parser_valores_por_defecto():
     args = _args(["agregar", "--nombre", "N", "--precio", "1", "--url", "u", "--tienda", "t"])
     assert args.marca is None and args.moneda == "COP" and args.crear_tienda is False
+    assert args.descripcion is None
     assert _args(["listar"]).consulta is None
     assert _args(["desactivar", "--id", "3"]).id == 3
 
@@ -148,7 +149,8 @@ async def test_agregar_llama_add_product_con_argumentos_correctos(falsos, capsys
     assert f.llamadas == [
         ("init_db_pool",),
         ("add_product", "Alimento gato 3kg", "MarcaEjemplo", Decimal("44650"),
-         "https://tienda-ejemplo.com.co/alimento", "tienda-ejemplo.com.co", "USD"),
+         "https://tienda-ejemplo.com.co/alimento", "tienda-ejemplo.com.co", "USD",
+         {"description": None}),
         ("close_db_pool",),
     ]
     salida = capsys.readouterr().out
@@ -225,6 +227,9 @@ def _con(argv, opcion, valor):
     ("--marca", "M" * 101),
     ("--moneda", "cop"),
     ("--precio", "100000000.01"),
+    ("--descripcion", "  "),
+    ("--descripcion", "D" * 301),
+    ("--descripcion", "Oculto\u202etexto"),
 ])
 async def test_agregar_crear_tienda_invalido_no_registra_tienda(falsos, opcion, valor, capsys):
     f = falsos()
@@ -255,10 +260,25 @@ def test_main_agregar_devuelve_codigo(falsos):
     assert f.nombres() == ["init_db_pool", "add_product", "close_db_pool"]
 
 
+async def test_agregar_descripcion_se_pasa_a_add_product(falsos, capsys):
+    f = falsos()
+    argv = ARGS_AGREGAR + ["--descripcion", "  Para gatos con digestión sensible. "]
+    assert await cp.cmd_agregar(_args(argv)) == 0
+    llamada = f.llamadas[1]
+    assert llamada[0] == "add_product"
+    assert llamada[-1] == {"description": "  Para gatos con digestión sensible. "}
+    assert "Descripción: Para gatos con digestión sensible." in capsys.readouterr().out
+
+
+def test_parser_descripcion():
+    assert _args(ARGS_AGREGAR + ["--descripcion", "Texto"]).descripcion == "Texto"
+
+
 # --- listar ---
 
-def _producto(id_, nombre, marca, activo=True):
-    return {"id": id_, "name": nombre, "brand": marca, "price": Decimal("44650.00"),
+def _producto(id_, nombre, marca, activo=True, descripcion=None):
+    return {"id": id_, "name": nombre, "brand": marca, "description": descripcion,
+            "price": Decimal("44650.00"),
             "currency": "COP", "url": "https://t.com.co/x", "store": "t.com.co",
             "is_active": activo}
 
@@ -276,6 +296,19 @@ async def test_listar_muestra_productos_y_tiendas(falsos, capsys):
     assert "[1] Alimento gato | MarcaA | $44.650 COP | t.com.co | activo" in salida
     assert "[2] Arena | - | $44.650 COP | t.com.co | inactivo" in salida
     assert "t.com.co | activa" in salida and "vieja.com.co | inactiva" in salida
+
+
+async def test_listar_muestra_descripcion(falsos, capsys):
+    falsos(productos=[_producto(1, "Alimento gato", "MarcaA", descripcion="Para digestión sensible."),
+                      _producto(2, "Arena", None)])
+    assert await cp.cmd_listar(_args(["listar"])) == 0
+    salida = capsys.readouterr().out
+    assert "Para digestión sensible." in salida
+    lineas = salida.splitlines()
+    i = next(n for n, l in enumerate(lineas) if l.strip().startswith("[1]"))
+    assert lineas[i + 1].strip() == "Para digestión sensible."
+    j = next(n for n, l in enumerate(lineas) if l.strip().startswith("[2]"))
+    assert not lineas[j + 1].startswith("      ")
 
 
 async def test_listar_filtra_por_consulta(falsos, capsys):
