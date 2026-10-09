@@ -6,7 +6,14 @@ import pytest
 
 import utils.database as database
 from utils import catalog
-from utils.catalog import _escapar_like, add_product, search_products
+from utils.catalog import (
+    _STOPWORDS,
+    _escapar_like,
+    _normalizar_token,
+    _tokens_significativos,
+    add_product,
+    search_products,
+)
 
 TIENDA = "mercadolibre.com.co"
 URL_OK = "https://articulo.mercadolibre.com.co/MCO-123-comida-gato"
@@ -374,14 +381,14 @@ async def test_search_tokens_parametrizados_y_escapados(monkeypatch):
     monkeypatch.setattr(database, "DB_POOL", pool)
     await search_products("  Gato 100% a_b uno dos tres cuatro cinco  ")
     sql, args = pool.conn.llamadas[0]
-    # Máximo 6 tokens + el límite; los datos nunca van en el SQL.
-    assert list(args[:-1]) == ["%Gato%", "%100\\%%", "%a\\_b%", "%uno%", "%dos%", "%tres%"]
-    assert "Gato" not in sql and "100" not in sql
+    # Máximo 6 tokens (en minúsculas) + el límite; los datos nunca van en el SQL.
+    assert list(args[:-1]) == ["%gat%", "%100\\%%", "%a\\_b%", "%uno%", "%dos%", "%tres%"]
+    assert "gato" not in sql.lower() and "100" not in sql
     assert "ESCAPE '\\'" in sql
 
 
-@pytest.mark.parametrize("query,n_tokens", [("gato", 1), ("a b c d e f", 6),
-                                            ("a b c d e f g h", 6)])
+@pytest.mark.parametrize("query,n_tokens", [("gato", 1), ("aa bb cc dd ee ff", 6),
+                                            ("aa bb cc dd ee ff gg hh", 6)])
 async def test_search_placeholders_coinciden_con_parametros(monkeypatch, query, n_tokens):
     pool = _PoolFalso()
     monkeypatch.setattr(database, "DB_POOL", pool)
@@ -439,3 +446,64 @@ async def test_search_descarta_nombre_o_marca_con_invisibles(monkeypatch, caplog
     assert [r["id"] for r in resultado] == [1, 5]
     assert sum(r.levelname == "WARNING" for r in caplog.records) == 3
     assert "‮" not in caplog.text
+
+
+# --- tokens significativos y puntaje ---
+
+@pytest.mark.parametrize("entrada,esperado", [
+    ("gatos", "gat"), ("gato", "gat"), ("gata", "gat"), ("Gatos", "gat"), ("GATA", "gat"),
+    ("digestiva", "digestiv"), ("digestivo", "digestiv"), ("digestivos", "digestiv"),
+    ("croquetas", "croquet"), ("ecocat", "ecocat"), ("ECOCAT", "ecocat"),
+    ("arena", "aren"), ("mesas", "mes"), ("gatas", "gat"), ("pato", "pat"), ("gat", "gat"), ("sal", "sal"), ("kg", "kg"),
+    ("comida", "comid"), ("leche", "lech"), ("100%", "100%"), ("bus", "bus"),
+])
+def test_normalizar_token(entrada, esperado):
+    # La 's' final solo se quita con más de 4 letras; la vocal final, con 4 o más.
+    assert _normalizar_token(entrada) == esperado
+
+
+def test_stopwords_basicas():
+    for palabra in ("de", "del", "la", "las", "el", "los", "un", "una", "unos", "unas",
+                    "y", "o", "con", "sin", "para", "por", "en", "a", "al", "que",
+                    "me", "mi", "tu", "su", "es", "lo"):
+        assert palabra in _STOPWORDS
+
+
+@pytest.mark.parametrize("texto,esperado", [
+    ("comida digestiva para gatos ECOCAT", ["comid", "digestiv", "gat", "ecocat"]),
+    ("Digestiva DIGESTIVO digestivos", ["digestiv"]),
+    ("x y gato", ["gat"]),
+    ("un gato de la casa", ["gat", "cas"]),
+    ("aa bb cc dd ee ff gg hh", ["aa", "bb", "cc", "dd", "ee", "ff"]),
+    ("de la de x el gato a b c d e f gg hh ii jj kk", ["gat", "gg", "hh", "ii", "jj", "kk"]),
+])
+def test_tokens_significativos(texto, esperado):
+    assert _tokens_significativos(texto) == esperado
+
+
+@pytest.mark.parametrize("query", ["de la", "para el con", "x", "a b c", "y o a"])
+async def test_search_solo_stopwords_lanza_antes_de_tocar_bd(monkeypatch, query):
+    monkeypatch.setattr(database, "DB_POOL", _PoolIntocable())
+    with pytest.raises(ValueError, match="más específicas"):
+        await search_products(query)
+
+
+@pytest.mark.parametrize("query,n_tokens", [("gato", 1), ("aa bb cc dd ee ff", 6)])
+async def test_search_sql_usa_puntaje(monkeypatch, query, n_tokens):
+    pool = _PoolFalso()
+    monkeypatch.setattr(database, "DB_POOL", pool)
+    await search_products(query)
+    sql, args = pool.conn.llamadas[0]
+    plano = " ".join(sql.split())
+    assert "AS puntaje" in plano
+    assert plano.count("THEN 1 ELSE 0 END") == n_tokens
+    assert "WHERE puntaje >= 1" in plano
+    assert "ORDER BY puntaje DESC, price ASC, id" in plano
+    # Sin AND entre tokens: solo se combinan con '+'.
+    assert plano.count(" + ") == n_tokens - 1
+    assert ") AND (" not in plano
+    # Cada $n de token aparece 2 veces (name y brand); el límite 1 vez.
+    for i in range(1, n_tokens + 1):
+        assert len(re.findall(rf"\${i}(?!\d)", sql)) == 2
+    assert len(re.findall(rf"\${n_tokens + 1}(?!\d)", sql)) == 1
+    assert len(args) == n_tokens + 1
