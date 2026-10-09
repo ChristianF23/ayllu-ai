@@ -239,26 +239,33 @@ async def test_fallo_inesperado_del_catalogo_devuelve_vacio(monkeypatch, agente)
 
 
 def test_registro_y_esquema_de_herramientas():
-    assert set(HERRAMIENTAS) == {"buscar_productos"}
+    assert set(HERRAMIENTAS) == {"buscar_productos", "productos_de_mascota"}
     esquemas = orq.ESQUEMA_HERRAMIENTAS
-    assert len(esquemas) == 1
-    funcion = esquemas[0]["function"]
-    assert funcion["name"] == "buscar_productos"
-    assert set(funcion["parameters"]["properties"]) == {"consulta"}
-    assert funcion["parameters"]["required"] == ["consulta"]
+    assert len(esquemas) == 2
+    por_nombre = {e["function"]["name"]: e["function"] for e in esquemas}
+    assert set(por_nombre) == {"buscar_productos", "productos_de_mascota"}
+    for nombre, parametro in (("buscar_productos", "consulta"), ("productos_de_mascota", "nombre")):
+        funcion = por_nombre[nombre]
+        assert set(funcion["parameters"]["properties"]) == {parametro}
+        assert funcion["parameters"]["required"] == [parametro]
+        assert funcion["parameters"]["additionalProperties"] is False
+    nombre_mascota = por_nombre["productos_de_mascota"]["parameters"]["properties"]["nombre"]
+    assert nombre_mascota["minLength"] == 1 and nombre_mascota["maxLength"] == 50
 
 
 async def test_tools_enviadas_a_acompletion(monkeypatch, agente):
     guion = instalar(monkeypatch, [FakeResponse("hola")])
     await agente.process_request("hola")
     tools = guion.llamadas[0]["tools"]
-    assert [t["function"]["name"] for t in tools] == ["buscar_productos"]
+    assert [t["function"]["name"] for t in tools] == ["buscar_productos", "productos_de_mascota"]
     assert set(tools[0]["function"]["parameters"]["properties"]) == {"consulta"}
+    assert set(tools[1]["function"]["parameters"]["properties"]) == {"nombre"}
 
 
 def test_orquestador_no_referencia_escritura_del_catalogo():
-    assert not hasattr(orq, "add_product")
-    assert not hasattr(orq, "deactivate_product")
+    for nombre in ("add_product", "deactivate_product", "add_pet", "link_product",
+                   "unlink_product"):
+        assert not hasattr(orq, nombre), nombre
 
 
 async def test_prompt_de_sistema_con_reglas(monkeypatch, agente):
@@ -394,3 +401,140 @@ async def test_compatibilidad_con_objetos_reales_de_litellm(monkeypatch, agente,
     assert res["usage"]["total_tokens"] == 38
     assert res["usage"]["estimated_cost_usd"] == pytest.approx(0.003)
     assert res["model_used"] == "gpt-4o-mini"
+
+
+# --- productos_de_mascota ---
+
+MASCOTA = {"mascota": "Milú", "especie": "gato", "productos": [dict(PRODUCTO)]}
+
+
+def tc_mascota(id_, nombre="Milu"):
+    return tc(id_, nombre="productos_de_mascota", args=json.dumps({"nombre": nombre}))
+
+
+@pytest.fixture
+def mascotas(monkeypatch):
+    llamadas = []
+
+    async def falso(nombre):
+        llamadas.append(nombre)
+        return {**MASCOTA, "productos": [dict(PRODUCTO)]}
+
+    monkeypatch.setattr(orq, "products_for_pet", falso)
+    return llamadas
+
+
+async def _contenido_mascota(monkeypatch, agente, argumentos=None):
+    llamada = (tc("m", nombre="productos_de_mascota", args=argumentos)
+               if argumentos is not None else tc_mascota("m"))
+    guion = instalar(monkeypatch, [FakeResponse(tool_calls=[llamada]), FakeResponse("ok")])
+    res = await agente.process_request("compra comida para Milu")
+    assert res["status"] == "success"
+    return json.loads(mensajes_tool(guion.llamadas[1])[0]["content"])
+
+
+async def test_productos_de_mascota_ok(monkeypatch, agente, mascotas):
+    contenido = await _contenido_mascota(monkeypatch, agente)
+    assert mascotas == ["Milu"]
+    assert contenido == {
+        "mascota": "Milú", "especie": "gato",
+        "productos": [{
+            "id": 7, "nombre": "Alimento Gato Adulto 1kg", "marca": "Felino",
+            "descripcion": "Croquetas para gato adulto.", "precio": 12345.5,
+            "moneda": "COP", "tienda": "tienda.example", "url": "https://tienda.example/p/7",
+        }],
+    }
+
+
+async def test_productos_de_mascota_recortes(monkeypatch, agente):
+    async def largo(nombre):
+        return {**MASCOTA, "productos": [{**PRODUCTO, "name": "N" * 300, "brand": "M" * 200,
+                                          "description": "D" * 300}]}
+
+    monkeypatch.setattr(orq, "products_for_pet", largo)
+    item = (await _contenido_mascota(monkeypatch, agente))["productos"][0]
+    assert len(item["nombre"]) == 120 and len(item["marca"]) == 60
+    assert len(item["descripcion"]) == 200
+
+
+async def test_productos_de_mascota_inexistente(monkeypatch, agente):
+    async def ninguna(nombre):
+        return None
+
+    monkeypatch.setattr(orq, "products_for_pet", ninguna)
+    contenido = await _contenido_mascota(monkeypatch, agente)
+    assert contenido == {"resultados": [], "nota": "No hay una mascota registrada con ese nombre."}
+
+
+async def test_productos_de_mascota_error_inesperado_igual_que_inexistente(monkeypatch, agente):
+    async def rota(nombre):
+        raise RuntimeError("BD caída con detalle interno")
+
+    monkeypatch.setattr(orq, "products_for_pet", rota)
+    contenido = await _contenido_mascota(monkeypatch, agente)
+    assert contenido == {"resultados": [], "nota": "No hay una mascota registrada con ese nombre."}
+
+
+async def test_productos_de_mascota_sin_productos(monkeypatch, agente):
+    async def vacia(nombre):
+        return {"mascota": "Milú", "especie": "gato", "productos": []}
+
+    monkeypatch.setattr(orq, "products_for_pet", vacia)
+    contenido = await _contenido_mascota(monkeypatch, agente)
+    assert contenido == {"mascota": "Milú", "especie": "gato", "productos": [],
+                         "nota": "Esta mascota no tiene productos vinculados."}
+
+
+async def test_productos_de_mascota_nombre_invalido(monkeypatch, agente):
+    async def invalido(nombre):
+        raise ValueError("Carácter no permitido")
+
+    monkeypatch.setattr(orq, "products_for_pet", invalido)
+    contenido = await _contenido_mascota(monkeypatch, agente)
+    assert "error" in contenido and "inválido" in contenido["error"]
+
+
+@pytest.mark.parametrize("argumentos", ["no es json", "[1, 2]", "{}", '{"nombre": 5}',
+                                        '{"otro": "Milu"}'])
+async def test_productos_de_mascota_argumentos_invalidos(monkeypatch, agente, mascotas, argumentos):
+    contenido = await _contenido_mascota(monkeypatch, agente, argumentos)
+    assert "error" in contenido
+    assert mascotas == []
+
+
+async def test_limites_compartidos_entre_herramientas(monkeypatch, agente, buscador, mascotas):
+    guion = instalar(monkeypatch, [
+        FakeResponse(tool_calls=[tc_mascota("1"), tc("2"), tc_mascota("3"), tc("4")]),
+        FakeResponse("listo"),
+    ])
+    res = await agente.process_request("compra comida para Milu")
+    assert res["response"] == "listo"
+    # 3 ejecuciones en total entre las dos herramientas.
+    assert len(mascotas) == 2 and len(buscador) == 1
+    msgs_tool = mensajes_tool(guion.llamadas[1])
+    assert "límite" in json.loads(msgs_tool[3]["content"])["error"].lower()
+    assert guion.llamadas[1]["tool_choice"] == "none"
+
+
+async def test_limite_de_rondas_compartido(monkeypatch, agente, buscador, mascotas):
+    guion = instalar(monkeypatch, [
+        FakeResponse(tool_calls=[tc_mascota("a")]),
+        FakeResponse(tool_calls=[tc("b")]),
+        FakeResponse(tool_calls=[tc_mascota("c")]),
+        FakeResponse("final", tool_calls=[tc_mascota("d")]),
+    ])
+    res = await agente.process_request("compra comida para Milu")
+    assert res["response"] == "final"
+    assert len(mascotas) == 2 and len(buscador) == 1
+    assert len(guion.llamadas) == 4
+    assert guion.llamadas[3]["tool_choice"] == "none"
+
+
+async def test_prompt_de_sistema_reglas_de_mascotas(monkeypatch, agente):
+    guion = instalar(monkeypatch, [FakeResponse("hola")])
+    await agente.process_request("hola")
+    sistema = guion.llamadas[0]["messages"][0]["content"]
+    assert "productos_de_mascota" in sistema
+    assert "NO adivines" in sistema
+    assert "sin avisar al usuario" in sistema
+    assert "no puedes comprar" in sistema
