@@ -220,6 +220,16 @@ async def search_products(query: str, max_results: int = 5) -> list[dict]:
                     f"Producto {fila['id']} descartado: url fuera de la tienda {fila['store']!r}."
                 )
                 continue
+            # Defensa en profundidad: solo control/invisibles (no longitud ni vacío).
+            try:
+                for campo in ("name", "brand"):
+                    if fila[campo] is not None:
+                        _rechazar_invisibles(str(fila[campo]), campo)
+            except ValueError:
+                logger.warning(
+                    f"Producto {fila['id']} descartado: texto con caracteres de control o invisibles."
+                )
+                continue
             resultados.append({
                 "id": fila["id"],
                 "name": fila["name"],
