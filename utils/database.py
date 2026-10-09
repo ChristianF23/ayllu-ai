@@ -47,7 +47,8 @@ async def init_db_pool():
 async def _create_tables(conn: asyncpg.Connection):
     """
     Crea las tablas 'users_whitelist', 'cost_logs', 'allowed_stores' y
-    'products' si no existen ('products' va después por su FK a allowed_stores).
+    'products' si no existen ('products' va después por su FK a allowed_stores),
+    y luego 'pets' y 'pet_products' (FK a pets y products). Sin semillas de mascotas.
     """
     ddl = """
     CREATE TABLE IF NOT EXISTS users_whitelist (
@@ -89,6 +90,23 @@ async def _create_tables(conn: asyncpg.Connection):
 
     -- Migración idempotente para instalaciones previas a la columna.
     ALTER TABLE products ADD COLUMN IF NOT EXISTS description VARCHAR(300);
+
+    CREATE TABLE IF NOT EXISTS pets (
+        id BIGSERIAL PRIMARY KEY,
+        name VARCHAR(50) NOT NULL,
+        name_key VARCHAR(50) NOT NULL UNIQUE,
+        species VARCHAR(30) NOT NULL,
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS pet_products (
+        pet_id BIGINT NOT NULL REFERENCES pets(id),
+        product_id BIGINT NOT NULL REFERENCES products(id),
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (pet_id, product_id)
+    );
     """
     await conn.execute(ddl)
 
