@@ -27,7 +27,7 @@ Un runbook es una función `async` fija, escrita y revisada por una persona, que
    - un valor fuera de la lista permitida devuelve `denied`;
    - sin pool de base de datos devuelve `error`;
    - el camino exitoso, con la base simulada o con el marcador `@pytest.mark.db`.
-5. **Corre los tests** dentro del contenedor y reporta el resultado real: `docker exec ayllu_app python -m pytest -q`.
+5. **Corre los tests** dentro del contenedor y reporta el resultado real: `docker compose run --rm --no-deps tests -q` (los argumentos de pytest van a continuación, ej. `-m llm`).
 
 ## Reparto de trabajo
 

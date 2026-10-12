@@ -17,7 +17,7 @@ Bot de Telegram que enruta mensajes a un agente orquestador (LiteLLM, `gpt-4o-mi
 - Herramienta `buscar_productos` en el orquestador: tool calling de solo lectura con límites en código (3 rondas, 3 ejecuciones, 5 resultados); se suma el costo de todas las llamadas y el bot registra el costo parcial si el LLM falla a mitad.
 - `utils/okf_reader.py` y `knowledge/`: conceptos en Markdown con frontmatter YAML que se inyectan al prompt del sistema.
 - `runbooks/`: acciones pre-aprobadas y seguras (ej. `db_inspector`).
-- `tests/`: pytest (`pytest.ini`, `requirements-dev.txt`). Marcadores: `db` (necesita PostgreSQL) y `llm` (gasta crédito; se omite por defecto, usar `-m llm`). Se corren dentro del contenedor: `docker exec ayllu_app python -m pytest`.
+- `tests/`: pytest (`pytest.ini`, `requirements-dev.txt`). Marcadores: `db` (necesita PostgreSQL) y `llm` (gasta crédito; se omite por defecto, usar `-m llm`). Se corren en un contenedor efímero (servicio `tests`, perfil `dev`): `docker compose run --rm --no-deps tests`; los argumentos de pytest van a continuación (ej. `-m llm`). `--no-deps` no arranca `db` ni `sandbox`: deben estar levantados. Los tests `db` usan hoy la base real; una base de pruebas separada está pendiente antes de la Fase 2.
 
 ## Reglas duras
 

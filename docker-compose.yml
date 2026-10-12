@@ -40,6 +40,29 @@ services:
     networks:
       - sandbox_net
       
+  # Tests en un contenedor efímero (imagen `dev`, con pytest). Solo con el perfil dev:
+  #   docker compose run --rm --no-deps tests [argumentos de pytest]
+  # Ojo: los tests `db` usan hoy la base de datos real; falta una base de pruebas separada.
+  tests:
+    profiles: ["dev"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    entrypoint: ["python", "-m", "pytest"]
+    env_file:
+      - .env
+    environment:
+      SANDBOX_URL: http://sandbox:8000
+    volumes:
+      - .:/app
+    networks:
+      - default
+      - sandbox_net
+    depends_on:
+      - db
+      - sandbox
+
   # Servicio de Base de Datos PostgreSQL
   db:
     image: postgres:15-alpine
