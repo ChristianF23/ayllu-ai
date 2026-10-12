@@ -1,6 +1,6 @@
 """
 Prueba de punta a punta con el LLM real (gasta crédito; marcador llm, se omite
-por defecto). Ejecutar a mano: docker exec ayllu_app python -m pytest -m llm tests/test_llm_busqueda.py
+por defecto). Ejecutar a mano: docker compose run --rm --no-deps tests -m llm tests/test_llm_busqueda.py
 Crea su propia tienda y producto de prueba y los borra antes y después.
 """
 import os
